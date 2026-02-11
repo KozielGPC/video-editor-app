@@ -1,6 +1,6 @@
 import { useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { readTextFile } from "@tauri-apps/plugin-fs";
+import { useOverlayWindow } from "@/hooks/useOverlayWindow";
 import { FolderOpen, Film, X, CheckCircle2 } from "lucide-react";
 import SourceSelector from "@/components/recorder/SourceSelector";
 import RecordingControls from "@/components/recorder/RecordingControls";
@@ -10,33 +10,35 @@ import { useUIStore } from "@/stores/uiStore";
 import { useEditorStore } from "@/stores/editorStore";
 import type { Effect } from "@/types/project";
 
-/** Zoom marker as stored by the Rust recording backend */
+/** Zoom marker as returned by the Rust backend (start_ms/end_ms = zoom in/out) */
 interface ZoomMarker {
+  start_ms: number;
+  end_ms: number;
   x: number;
   y: number;
-  timestamp_ms: number;
   scale: number;
-  duration_ms: number;
 }
 
-/** Read the zoom markers sidecar file and convert to Effect[] */
+/** Load zoom markers via Tauri command and convert to Effect[] */
 async function loadZoomEffects(recordingPath: string): Promise<Effect[]> {
   try {
-    const zoomPath = `${recordingPath}.zoom.json`;
-    const json = await readTextFile(zoomPath);
-    const markers: ZoomMarker[] = JSON.parse(json);
-    return markers.map((m) => ({
-      type: "zoom" as const,
-      startTime: m.timestamp_ms / 1000,
-      duration: m.duration_ms / 1000,
-      params: {
-        scale: m.scale,
-        x: m.x,
-        y: m.y,
-      },
-    }));
-  } catch {
-    // No zoom file or invalid -- that's fine
+    const markers = await invoke<ZoomMarker[]>("read_zoom_markers", {
+      recordingPath,
+    });
+    return markers
+      .filter((m) => m.end_ms > m.start_ms)
+      .map((m) => ({
+        type: "zoom" as const,
+        startTime: m.start_ms / 1000,
+        duration: (m.end_ms - m.start_ms) / 1000,
+        params: {
+          scale: m.scale,
+          x: m.x,
+          y: m.y,
+        },
+      }));
+  } catch (err) {
+    console.warn("Failed to load zoom markers:", err);
     return [];
   }
 }
@@ -126,6 +128,8 @@ function PostRecordingBanner() {
 }
 
 export default function RecorderView() {
+  useOverlayWindow();
+
   return (
     <div className="flex flex-col h-full p-4 gap-4 no-select">
       {/* Header with source selectors */}

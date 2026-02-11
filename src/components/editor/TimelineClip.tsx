@@ -202,6 +202,35 @@ function TimelineClip({
                   ))}
                 </div>
               )}
+
+            {/* Effect indicators bar */}
+            {track.type === "video" &&
+              clip.effects.length > 0 &&
+              clipDuration > 0 &&
+              width > 40 && (
+                <div className="absolute bottom-0 left-0 right-0 h-1.5 px-1 pb-0.5 pointer-events-none">
+                  {clip.effects.map((effect, i) => {
+                    const start = (effect.startTime / clipDuration) * 100;
+                    const end = ((effect.startTime + effect.duration) / clipDuration) * 100;
+                    const w = Math.max(4, end - start);
+                    const isZoom = effect.type === "zoom";
+                    return (
+                      <div
+                        key={i}
+                        className="absolute bottom-0.5 rounded-sm h-1"
+                        style={{
+                          left: `${start}%`,
+                          width: `${w}%`,
+                          backgroundColor: isZoom
+                            ? "rgba(59, 130, 246, 0.8)"
+                            : "rgba(251, 191, 36, 0.8)",
+                        }}
+                        title={`${effect.type} ${effect.startTime.toFixed(1)}s–${(effect.startTime + effect.duration).toFixed(1)}s`}
+                      />
+                    );
+                  })}
+                </div>
+              )}
           </div>
 
           {/* Right trim handle */}

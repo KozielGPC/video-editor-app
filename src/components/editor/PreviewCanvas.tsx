@@ -23,8 +23,8 @@ function formatTimecode(seconds: number, frameRate = 30): string {
 }
 
 /**
- * Compute a smooth zoom multiplier from 1.0 → target → 1.0 over the effect duration.
- * Uses a bell-curve easing: sin(π·t) peaks at 1.0 mid-way.
+ * Compute zoom transform: ramp up at start, hold, ramp down at end.
+ * Matches toggle behavior: first shortcut = zoom in, second = zoom out.
  */
 function computeZoomTransform(
   effects: Effect[],
@@ -35,21 +35,27 @@ function computeZoomTransform(
   let originX = 50;
   let originY = 50;
   let isActive = false;
+  const RAMP = 0.15; // First/last 15% of duration for smooth ramp
   for (const e of effects) {
     if (e.type !== "zoom") continue;
     const effectStart = clipTrackPos + e.startTime;
     const effectEnd = effectStart + e.duration;
     if (playheadPos >= effectStart && playheadPos < effectEnd) {
       const progress = (playheadPos - effectStart) / e.duration;
-      // Bell-curve easing: smoothly zoom in then zoom out
-      const eased = Math.sin(Math.PI * progress);
-      const targetScale = e.params.scale ?? 1.3;
-      // Interpolate from 1.0 → targetScale using eased progress
-      scale = 1 + (targetScale - 1) * eased;
+      const targetScale = e.params.scale ?? 2;
+      let mix: number;
+      if (progress < RAMP) {
+        mix = progress / RAMP; // Ramp up
+      } else if (progress > 1 - RAMP) {
+        mix = (1 - progress) / RAMP; // Ramp down
+      } else {
+        mix = 1; // Hold at max
+      }
+      scale = 1 + (targetScale - 1) * mix;
       originX = e.params.x ?? 50;
       originY = e.params.y ?? 50;
       isActive = true;
-      break; // Use first active zoom
+      break;
     }
   }
   return { scale, originX, originY, isActive };

@@ -45,6 +45,10 @@ interface RecorderState {
   /** Dismiss the post-recording banner */
   clearLastRecording: () => void;
 
+  /** Zoom overlay during recording: when zoomed in, shows the region (x,y as 0-100, scale) */
+  zoomOverlay: { x: number; y: number; scale: number } | null;
+  setZoomOverlay: (region: { x: number; y: number; scale: number } | null) => void;
+
   startRecording: () => Promise<void>;
   pauseRecording: () => Promise<void>;
   resumeRecording: () => Promise<void>;
@@ -79,8 +83,11 @@ export const useRecorderStore = create<RecorderState>()(
       recordingState: "idle",
       elapsedTime: 0,
       lastRecordingPath: null,
+      zoomOverlay: null,
       clearLastRecording: () =>
         set({ lastRecordingPath: null }, false, "clearLastRecording"),
+      setZoomOverlay: (zoomOverlay) =>
+        set({ zoomOverlay }, false, "setZoomOverlay"),
 
       startRecording: async () => {
         const { selectedScreenId, selectedCameraId, selectedMicId } = get();
@@ -92,7 +99,12 @@ export const useRecorderStore = create<RecorderState>()(
           });
 
           set(
-            { recordingState: "recording", elapsedTime: 0, lastRecordingPath: null },
+            {
+              recordingState: "recording",
+              elapsedTime: 0,
+              lastRecordingPath: null,
+              zoomOverlay: null,
+            },
             false,
             "startRecording",
           );
@@ -147,7 +159,11 @@ export const useRecorderStore = create<RecorderState>()(
         } finally {
           clearTimer();
           set(
-            { recordingState: "idle", lastRecordingPath: outputPath },
+            {
+              recordingState: "idle",
+              lastRecordingPath: outputPath,
+              zoomOverlay: null,
+            },
             false,
             "stopRecording",
           );

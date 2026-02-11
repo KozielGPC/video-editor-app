@@ -104,7 +104,12 @@ export default function SourceSelector() {
         icon={<Monitor size={16} />}
         label="Screen"
         value={selectedScreenId}
-        onChange={selectScreen}
+        onChange={(id) => {
+          selectScreen(id);
+          if (id !== null) {
+            window.dispatchEvent(new CustomEvent("request-screen-stream"));
+          }
+        }}
         items={screens}
         disabled={isActive}
       />

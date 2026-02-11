@@ -31,6 +31,8 @@ pub struct RecordingConfig {
     pub camera_id: Option<String>,
     pub mic_id: Option<String>,
     pub output_path: String,
+    pub screen_width: u32,
+    pub screen_height: u32,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -89,16 +91,14 @@ pub struct MousePosition {
     pub timestamp_ms: u64,
 }
 
-/// A user-placed "zoom here" marker recorded via shortcut during recording.
+/// A zoom segment: zoom in at start_ms, zoom out at end_ms, centered at (x,y) as percentage 0-100.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ZoomMarker {
+    pub start_ms: u64,
+    pub end_ms: u64,
     pub x: f64,
     pub y: f64,
-    pub timestamp_ms: u64,
-    /// Default zoom scale to apply (e.g. 2.0 = 2x zoom)
     pub scale: f64,
-    /// Duration of the smooth zoom in+out in milliseconds
-    pub duration_ms: u64,
 }
 
 // ---------------------------------------------------------------------------

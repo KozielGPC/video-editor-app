@@ -125,7 +125,8 @@ pub fn run() {
             commands::recording::resume_recording,
             commands::recording::stop_recording,
             commands::recording::get_recording_state,
-            commands::recording::mark_zoom_point,
+            commands::recording::toggle_zoom,
+            commands::recording::read_zoom_markers,
             // Media
             commands::media::probe_media,
             commands::media::generate_thumbnails,

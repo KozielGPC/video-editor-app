@@ -13,10 +13,11 @@ pub struct RecordingManager {
     pub encoder: Option<encoder::RecordingEncoder>,
     pub mouse_tracker: Option<mouse_tracker::MouseTracker>,
     pub output_path: Option<String>,
-    /// Zoom markers placed by the user during recording (Cmd+Shift+Z)
     pub zoom_markers: Vec<ZoomMarker>,
-    /// When the recording started (for computing marker timestamps)
     pub recording_start: Option<Instant>,
+    pub is_zoomed_in: bool,
+    pub screen_width: u32,
+    pub screen_height: u32,
 }
 
 impl RecordingManager {
@@ -28,6 +29,9 @@ impl RecordingManager {
             output_path: None,
             zoom_markers: Vec::new(),
             recording_start: None,
+            is_zoomed_in: false,
+            screen_width: 1920,
+            screen_height: 1080,
         }
     }
 
@@ -39,16 +43,14 @@ impl RecordingManager {
         let screen_idx = config.screen_id.as_deref();
         let mic_idx = config.mic_id.as_deref();
 
-        // Start FFmpeg encoder with avfoundation capture
         let enc = encoder::RecordingEncoder::start(
             &config.output_path,
             screen_idx,
             mic_idx,
-            30, // fps
+            30,
         )?;
         self.encoder = Some(enc);
 
-        // Start mouse tracker for zoom markers
         let mut tracker = mouse_tracker::MouseTracker::new();
         tracker.start();
         self.mouse_tracker = Some(tracker);
@@ -56,6 +58,9 @@ impl RecordingManager {
         self.output_path = Some(config.output_path.clone());
         self.zoom_markers.clear();
         self.recording_start = Some(Instant::now());
+        self.is_zoomed_in = false;
+        self.screen_width = config.screen_width.max(1);
+        self.screen_height = config.screen_height.max(1);
         self.state = RecordingState::Recording;
 
         Ok(config.output_path.clone())
@@ -100,11 +105,29 @@ impl RecordingManager {
             }
         }
 
-        // Save zoom markers if any
-        if !self.zoom_markers.is_empty() {
+        // Close any open zoom segment (user zoomed in but didn't zoom out)
+        if self.is_zoomed_in {
+            if let Some(last) = self.zoom_markers.last_mut() {
+                if last.end_ms == 0 {
+                    last.end_ms = self
+                        .recording_start
+                        .map(|s| s.elapsed().as_millis() as u64)
+                        .unwrap_or(0);
+                }
+            }
+            self.is_zoomed_in = false;
+        }
+        // Save zoom markers (filter out incomplete segments)
+        let complete: Vec<_> = self
+            .zoom_markers
+            .iter()
+            .filter(|m| m.end_ms > m.start_ms)
+            .cloned()
+            .collect();
+        if !complete.is_empty() {
             if let Some(ref out) = self.output_path {
                 let zoom_path = format!("{}.zoom.json", out);
-                if let Ok(json) = serde_json::to_string_pretty(&self.zoom_markers) {
+                if let Ok(json) = serde_json::to_string_pretty(&complete) {
                     std::fs::write(&zoom_path, json).ok();
                 }
             }
@@ -116,30 +139,39 @@ impl RecordingManager {
         Ok(path)
     }
 
-    /// Mark a smooth zoom in/out at the current mouse position.
-    pub fn mark_zoom_point(
-        &mut self,
-        scale: f64,
-        duration_ms: u64,
-    ) -> Result<ZoomMarker, String> {
+    /// Toggle zoom: first call zooms in at mouse position, second call zooms out.
+    pub fn toggle_zoom(&mut self, scale: f64) -> Result<Option<ZoomMarker>, String> {
         if self.state != RecordingState::Recording {
             return Err("Not currently recording".to_string());
         }
-        let timestamp_ms = self
+        let now_ms = self
             .recording_start
             .map(|s| s.elapsed().as_millis() as u64)
             .unwrap_or(0);
 
-        let (x, y) = mouse_tracker::get_current_mouse_position();
+        let (mx, my) = mouse_tracker::get_current_mouse_position();
+        let x = (mx / self.screen_width as f64 * 100.0).clamp(0.0, 100.0);
+        let y = (my / self.screen_height as f64 * 100.0).clamp(0.0, 100.0);
 
-        let marker = ZoomMarker {
-            x,
-            y,
-            timestamp_ms,
-            scale,
-            duration_ms,
-        };
-        self.zoom_markers.push(marker.clone());
-        Ok(marker)
+        if self.is_zoomed_in {
+            if let Some(last) = self.zoom_markers.last_mut() {
+                if last.end_ms == 0 {
+                    last.end_ms = now_ms;
+                }
+            }
+            self.is_zoomed_in = false;
+            Ok(None)
+        } else {
+            let marker = ZoomMarker {
+                start_ms: now_ms,
+                end_ms: 0,
+                x,
+                y,
+                scale,
+            };
+            self.zoom_markers.push(marker.clone());
+            self.is_zoomed_in = true;
+            Ok(Some(marker))
+        }
     }
 }

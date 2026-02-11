@@ -2,6 +2,7 @@ import Sidebar from "@/components/layout/Sidebar";
 import RecorderView from "@/components/recorder/RecorderView";
 import EditorView from "@/components/editor/EditorView";
 import ExportDialog from "@/components/export/ExportDialog";
+import SettingsDialog from "@/components/settings/SettingsDialog";
 import { useUIStore } from "@/stores/uiStore";
 
 export default function AppShell() {
@@ -15,6 +16,7 @@ export default function AppShell() {
         {activeView === "editor" && <EditorView />}
       </main>
       <ExportDialog />
+      <SettingsDialog />
     </div>
   );
 }

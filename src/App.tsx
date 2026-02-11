@@ -1,6 +1,7 @@
 import { useEffect } from "react";
-import { BrowserRouter } from "react-router-dom";
+import { BrowserRouter, Routes, Route } from "react-router-dom";
 import AppShell from "@/components/layout/AppShell";
+import OverlayView from "@/components/recorder/OverlayView";
 import { useShortcuts } from "@/hooks/useShortcuts";
 import { useMediaSources } from "@/hooks/useMediaSources";
 
@@ -14,7 +15,10 @@ export default function App() {
 
   return (
     <BrowserRouter>
-      <AppShell />
+      <Routes>
+        <Route path="/" element={<AppShell />} />
+        <Route path="/overlay" element={<OverlayView />} />
+      </Routes>
     </BrowserRouter>
   );
 }
