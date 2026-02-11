@@ -1,0 +1,28 @@
+# Python (legacy reference)
+__pycache__/
+*.pyc
+.venv/
+
+# Node
+node_modules/
+dist/
+
+# Rust
+src-tauri/target/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Tauri generated
+src-tauri/gen/
+
+# Environment
+.env
+.env.local

@@ -1,0 +1,18 @@
+{
+  "identifier": "default",
+  "description": "Default permissions for AutoEditor",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "fs:default",
+    "global-shortcut:default",
+    "global-shortcut:allow-register",
+    "global-shortcut:allow-unregister",
+    "shell:default",
+    "shell:allow-spawn",
+    "shell:allow-execute"
+  ]
+}

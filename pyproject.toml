@@ -1,0 +1,10 @@
+[project]
+name = "autoeditor"
+version = "0.1.0"
+description = "Automatic video editor that detects and removes silent parts"
+requires-python = ">=3.12"
+dependencies = [
+    "click>=8.3.1",
+    "pydub>=0.25.1",
+    "rich>=14.3.2",
+]
