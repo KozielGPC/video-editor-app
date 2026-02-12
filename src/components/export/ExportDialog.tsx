@@ -236,6 +236,10 @@ export default function ExportDialog() {
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm data-[state=open]:animate-in data-[state=open]:fade-in-0" />
         <Dialog.Content className="fixed z-50 top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[560px] max-h-[85vh] overflow-y-auto rounded-xl bg-neutral-900 border border-neutral-700 shadow-2xl shadow-black/50 p-6 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95">
+          <Dialog.Description className="sr-only">
+            Configure export format, resolution, quality, and other settings for your video.
+          </Dialog.Description>
+
           {/* Header */}
           <div className="flex items-center justify-between mb-6">
             <Dialog.Title className="text-lg font-semibold text-neutral-100 flex items-center gap-2">

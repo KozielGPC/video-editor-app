@@ -9,8 +9,14 @@ use std::collections::HashMap;
 pub struct ScreenInfo {
     pub id: String,
     pub name: String,
+    /// Logical width of the display (points, not pixels)
     pub width: u32,
+    /// Logical height of the display (points, not pixels)
     pub height: u32,
+    /// X origin in the global display coordinate space
+    pub origin_x: f64,
+    /// Y origin in the global display coordinate space
+    pub origin_y: f64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -25,6 +31,19 @@ pub struct MicrophoneInfo {
     pub name: String,
 }
 
+/// Camera overlay layout in percentage (0-100) of screen dimensions
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct CameraLayout {
+    /// X position as percentage of screen width (0-100)
+    pub x: f64,
+    /// Y position as percentage of screen height (0-100)
+    pub y: f64,
+    /// Width as percentage of screen width (0-100)
+    pub width: f64,
+    /// Height as percentage of screen height (0-100)
+    pub height: f64,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct RecordingConfig {
     pub screen_id: Option<String>,
@@ -33,6 +52,12 @@ pub struct RecordingConfig {
     pub output_path: String,
     pub screen_width: u32,
     pub screen_height: u32,
+    /// Display origin X in global coordinate space (for multi-monitor)
+    pub screen_origin_x: f64,
+    /// Display origin Y in global coordinate space (for multi-monitor)
+    pub screen_origin_y: f64,
+    /// Optional camera layout for overlay positioning
+    pub camera_layout: Option<CameraLayout>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]

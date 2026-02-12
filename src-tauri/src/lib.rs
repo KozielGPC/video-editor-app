@@ -1,3 +1,4 @@
+pub mod capture;
 mod commands;
 mod editor;
 pub mod models;
@@ -13,6 +14,8 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .manage(Mutex::new(recording::RecordingManager::new()))
         .manage(Mutex::new(commands::export::ExportManager::new()))
+        // Capture streaming manager for live preview
+        .manage(Mutex::new(capture::CaptureManager::new()))
         // Custom protocol for serving local video files with range-request support
         .register_uri_scheme_protocol("stream", |_app, request| {
             use std::io::{Read, Seek, SeekFrom};
@@ -116,6 +119,18 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            // Core Graphics-based source enumeration
+            capture::list_capturable_windows,
+            capture::list_capturable_screens,
+            // Core Graphics-based live capture streaming
+            capture::get_capture_capabilities,
+            capture::start_source_capture,
+            capture::stop_source_capture,
+            capture::stop_all_captures,
+            capture::get_source_frame,
+            capture::is_source_capturing,
+            capture::get_active_captures,
+            capture::get_capture_frame_count,
             // Recording
             commands::recording::list_screens,
             commands::recording::list_cameras,
@@ -127,6 +142,7 @@ pub fn run() {
             commands::recording::get_recording_state,
             commands::recording::toggle_zoom,
             commands::recording::read_zoom_markers,
+            commands::recording::merge_camera_overlay,
             // Media
             commands::media::probe_media,
             commands::media::generate_thumbnails,

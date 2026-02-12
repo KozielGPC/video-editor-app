@@ -18,6 +18,10 @@ pub struct RecordingManager {
     pub is_zoomed_in: bool,
     pub screen_width: u32,
     pub screen_height: u32,
+    /// Display origin X in the global coordinate space (for multi-monitor)
+    pub screen_origin_x: f64,
+    /// Display origin Y in the global coordinate space (for multi-monitor)
+    pub screen_origin_y: f64,
 }
 
 impl RecordingManager {
@@ -32,6 +36,8 @@ impl RecordingManager {
             is_zoomed_in: false,
             screen_width: 1920,
             screen_height: 1080,
+            screen_origin_x: 0.0,
+            screen_origin_y: 0.0,
         }
     }
 
@@ -43,6 +49,8 @@ impl RecordingManager {
         let screen_idx = config.screen_id.as_deref();
         let mic_idx = config.mic_id.as_deref();
 
+        // Camera is recorded separately by the browser (MediaRecorder)
+        // and merged in post-processing, so we only record screen + mic here.
         let enc = encoder::RecordingEncoder::start(
             &config.output_path,
             screen_idx,
@@ -61,6 +69,8 @@ impl RecordingManager {
         self.is_zoomed_in = false;
         self.screen_width = config.screen_width.max(1);
         self.screen_height = config.screen_height.max(1);
+        self.screen_origin_x = config.screen_origin_x;
+        self.screen_origin_y = config.screen_origin_y;
         self.state = RecordingState::Recording;
 
         Ok(config.output_path.clone())
@@ -150,8 +160,11 @@ impl RecordingManager {
             .unwrap_or(0);
 
         let (mx, my) = mouse_tracker::get_current_mouse_position();
-        let x = (mx / self.screen_width as f64 * 100.0).clamp(0.0, 100.0);
-        let y = (my / self.screen_height as f64 * 100.0).clamp(0.0, 100.0);
+        // Convert global mouse coordinates to screen-relative by subtracting display origin
+        let rel_x = mx - self.screen_origin_x;
+        let rel_y = my - self.screen_origin_y;
+        let x = (rel_x / self.screen_width as f64 * 100.0).clamp(0.0, 100.0);
+        let y = (rel_y / self.screen_height as f64 * 100.0).clamp(0.0, 100.0);
 
         if self.is_zoomed_in {
             if let Some(last) = self.zoom_markers.last_mut() {

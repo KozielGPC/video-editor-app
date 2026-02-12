@@ -1,1 +1,34 @@
-{"identifier":"default","description":"Default permissions for AutoEditor","windows":["main","overlay"],"permissions":["core:default","dialog:default","dialog:allow-open","dialog:allow-save","fs:default","global-shortcut:default","global-shortcut:allow-register","global-shortcut:allow-unregister","shell:default","shell:allow-spawn","shell:allow-execute"]}
+{
+  "identifier": "default",
+  "description": "Default permissions for AutoEditor",
+  "windows": ["main", "overlay"],
+  "permissions": [
+    "core:default",
+    "core:webview:allow-create-webview-window",
+    "core:window:default",
+    "core:window:allow-create",
+    "core:window:allow-set-ignore-cursor-events",
+    "core:window:allow-close",
+    "core:window:allow-set-always-on-top",
+    "core:window:allow-set-focus",
+    "core:window:allow-set-position",
+    "core:window:allow-set-size",
+    "dialog:default",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "fs:default",
+    {
+      "identifier": "fs:allow-write-file",
+      "allow": [
+        { "path": "$HOME/Movies/**" },
+        { "path": "$HOME/Movies/AutoEditor/**" }
+      ]
+    },
+    "global-shortcut:default",
+    "global-shortcut:allow-register",
+    "global-shortcut:allow-unregister",
+    "shell:default",
+    "shell:allow-spawn",
+    "shell:allow-execute"
+  ]
+}

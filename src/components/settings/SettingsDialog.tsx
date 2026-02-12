@@ -70,6 +70,10 @@ export default function SettingsDialog() {
           className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[480px] max-h-[85vh]
             bg-neutral-900 border border-neutral-700 rounded-xl shadow-2xl z-[201] flex flex-col overflow-hidden"
         >
+          <Dialog.Description className="sr-only">
+            Configure application shortcuts and recorder settings.
+          </Dialog.Description>
+
           <div className="flex items-center justify-between px-6 py-4 border-b border-neutral-700">
             <Dialog.Title className="text-lg font-semibold text-neutral-100">
               Settings

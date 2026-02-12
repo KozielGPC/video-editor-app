@@ -1,18 +1,85 @@
 use crate::models::ScreenInfo;
 use std::process::Command;
 
-/// Enumerate available screens using FFmpeg's avfoundation device listing.
+// ---------------------------------------------------------------------------
+// CoreGraphics FFI for display enumeration
+// ---------------------------------------------------------------------------
+
+type CGDirectDisplayID = u32;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct CGRect {
+    origin: CGPoint,
+    size: CGSize,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct CGPoint {
+    x: f64,
+    y: f64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct CGSize {
+    width: f64,
+    height: f64,
+}
+
+#[link(name = "CoreGraphics", kind = "framework")]
+extern "C" {
+    fn CGGetActiveDisplayList(
+        max_displays: u32,
+        active_displays: *mut CGDirectDisplayID,
+        display_count: *mut u32,
+    ) -> i32;
+    fn CGDisplayBounds(display: CGDirectDisplayID) -> CGRect;
+}
+
+/// Query macOS CoreGraphics for active display dimensions and origins.
+/// Returns a vec of (width, height, origin_x, origin_y) in logical points,
+/// ordered by the same index CGGetActiveDisplayList uses (which matches
+/// avfoundation's "Capture screen N" ordering).
+fn get_display_info() -> Vec<(u32, u32, f64, f64)> {
+    let mut ids: [CGDirectDisplayID; 16] = [0; 16];
+    let mut count: u32 = 0;
+    let result =
+        unsafe { CGGetActiveDisplayList(16, ids.as_mut_ptr(), &mut count) };
+    if result != 0 {
+        return Vec::new();
+    }
+    let count = count as usize;
+    (0..count)
+        .map(|i| {
+            let bounds = unsafe { CGDisplayBounds(ids[i]) };
+            (
+                bounds.size.width as u32,
+                bounds.size.height as u32,
+                bounds.origin.x,
+                bounds.origin.y,
+            )
+        })
+        .collect()
+}
+
+/// Enumerate available screens using FFmpeg's avfoundation device listing,
+/// enriched with actual dimensions from CoreGraphics.
 pub fn enumerate_screens() -> Result<Vec<ScreenInfo>, String> {
     let output = Command::new("ffmpeg")
         .args(["-f", "avfoundation", "-list_devices", "true", "-i", ""])
         .output()
         .map_err(|e| format!("Failed to run ffmpeg: {e}"))?;
 
+    let display_info = get_display_info();
+
     // FFmpeg prints device list to stderr.
     // Format: [AVFoundation indev @ 0x...] [0] Capture screen 0
     let stderr = String::from_utf8_lossy(&output.stderr);
     let mut screens = Vec::new();
     let mut in_video_section = false;
+    let mut screen_counter: usize = 0;
 
     for line in stderr.lines() {
         if line.contains("AVFoundation video devices:") {
@@ -27,27 +94,39 @@ pub fn enumerate_screens() -> Result<Vec<ScreenInfo>, String> {
         }
 
         // Parse lines like: [AVFoundation indev @ 0x...] [0] Capture screen 0
-        // Find the SECOND bracket pair which has the device index.
         if let Some(parsed) = parse_device_line(line) {
             let lower = parsed.1.to_lowercase();
             if lower.contains("screen") || lower.contains("display") || lower.contains("capture") {
+                let (w, h, ox, oy) = display_info
+                    .get(screen_counter)
+                    .copied()
+                    .unwrap_or((1920, 1080, 0.0, 0.0));
                 screens.push(ScreenInfo {
                     id: parsed.0.to_string(),
                     name: parsed.1,
-                    width: 1920,
-                    height: 1080,
+                    width: w,
+                    height: h,
+                    origin_x: ox,
+                    origin_y: oy,
                 });
+                screen_counter += 1;
             }
         }
     }
 
     // Always provide at least one default screen
     if screens.is_empty() {
+        let (w, h, ox, oy) = display_info
+            .first()
+            .copied()
+            .unwrap_or((1920, 1080, 0.0, 0.0));
         screens.push(ScreenInfo {
             id: "0".to_string(),
             name: "Default Screen".to_string(),
-            width: 1920,
-            height: 1080,
+            width: w,
+            height: h,
+            origin_x: ox,
+            origin_y: oy,
         });
     }
 

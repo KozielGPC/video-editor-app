@@ -1,4 +1,4 @@
-use crate::models::{ClipData, MediaInfo, ProjectData};
+use crate::models::{ClipData, EffectData, MediaInfo, ProjectData};
 use std::process::{Command, Stdio};
 
 // ---------------------------------------------------------------------------
@@ -135,6 +135,55 @@ pub struct ExportGraph {
     pub has_audio: bool,
 }
 
+/// Build a crop+scale filter chain that applies zoom effects within a clip.
+///
+/// Zoom effects use params: `scale` (zoom factor), `x` (0-100), `y` (0-100).
+/// The filter uses conditional crop expressions so the output resolution stays
+/// constant — matching CSS `transform: scale()` + `transformOrigin` behavior.
+fn build_zoom_crop_chain(
+    effects: &[&EffectData],
+    out_w: u32,
+    out_h: u32,
+) -> String {
+    if effects.is_empty() {
+        return format!("scale={out_w}:{out_h}");
+    }
+    // Build nested conditional expression for crop width/height/x/y.
+    // For each zoom effect: when active, crop a (iw/s)x(ih/s) region centered at (cx, cy).
+    // When no zoom is active: crop the full frame (iw x ih at 0,0).
+    let param_f64 = |params: &std::collections::HashMap<String, serde_json::Value>,
+                      key: &str,
+                      default: f64| {
+        params
+            .get(key)
+            .and_then(|v| v.as_f64())
+            .unwrap_or(default)
+    };
+    // Build from inside out: start with "no zoom" defaults, wrap with conditions
+    let mut w_expr = "iw".to_string();
+    let mut h_expr = "ih".to_string();
+    let mut x_expr = "0".to_string();
+    let mut y_expr = "0".to_string();
+    for effect in effects.iter().rev() {
+        let s = param_f64(&effect.params, "scale", 2.0);
+        let cx = param_f64(&effect.params, "x", 50.0) / 100.0;
+        let cy = param_f64(&effect.params, "y", 50.0) / 100.0;
+        let zs = effect.start_time as f64 / 1000.0;
+        let ze = zs + (effect.duration as f64 / 1000.0);
+        w_expr = format!("if(between(t\\,{zs:.3}\\,{ze:.3})\\,iw/{s}\\,{w_expr})");
+        h_expr = format!("if(between(t\\,{zs:.3}\\,{ze:.3})\\,ih/{s}\\,{h_expr})");
+        x_expr = format!(
+            "if(between(t\\,{zs:.3}\\,{ze:.3})\\,(iw-iw/{s})*{cx}\\,{x_expr})"
+        );
+        y_expr = format!(
+            "if(between(t\\,{zs:.3}\\,{ze:.3})\\,(ih-ih/{s})*{cy}\\,{y_expr})"
+        );
+    }
+    format!(
+        "crop=w='{w_expr}':h='{h_expr}':x='{x_expr}':y='{y_expr}',scale={out_w}:{out_h}"
+    )
+}
+
 pub fn build_export_filter_complex(project: &ProjectData) -> ExportGraph {
     let mut input_paths: Vec<String> = Vec::new();
     let mut asset_to_input: std::collections::HashMap<String, usize> = Default::default();
@@ -142,6 +191,8 @@ pub fn build_export_filter_complex(project: &ProjectData) -> ExportGraph {
     let mut concat_video_labels: Vec<String> = Vec::new();
     let mut concat_audio_labels: Vec<String> = Vec::new();
     let mut label_counter: usize = 0;
+
+    let (proj_w, proj_h) = project.resolution;
 
     // Collect all clips across all tracks (flatten; sorted by track_position)
     let mut all_clips: Vec<&ClipData> = Vec::new();
@@ -170,9 +221,17 @@ pub fn build_export_filter_complex(project: &ProjectData) -> ExportGraph {
         let al = format!("a{label_counter}");
         label_counter += 1;
 
-        // Trim video
+        // Collect zoom effects for this clip
+        let zoom_effects: Vec<&EffectData> = clip
+            .effects
+            .iter()
+            .filter(|e| e.effect_type == "zoom")
+            .collect();
+
+        // Trim video + apply zoom effects (if any)
+        let zoom_filter = build_zoom_crop_chain(&zoom_effects, proj_w, proj_h);
         filter_parts.push(format!(
-            "[{input_idx}:v]trim=start={start_sec:.3}:end={end_sec:.3},setpts=PTS-STARTPTS[{vl}]"
+            "[{input_idx}:v]trim=start={start_sec:.3}:end={end_sec:.3},setpts=PTS-STARTPTS,{zoom_filter}[{vl}]"
         ));
 
         // Trim audio

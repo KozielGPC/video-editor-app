@@ -43,21 +43,43 @@ export function useOverlayWindow(): void {
         return;
       }
 
+      // Get screen dimensions to create a window that covers the screen
+      // Using fullscreen: false to avoid issues with transparent fullscreen windows
+      const screenWidth = window.screen.width;
+      const screenHeight = window.screen.height;
+
       const overlay = new WebviewWindow(OVERLAY_LABEL, {
         url: getOverlayUrl(),
         title: "Recording Overlay",
         transparent: true,
         decorations: false,
-        fullscreen: true,
+        // Don't use fullscreen - it can cause issues with transparency on macOS
+        fullscreen: false,
+        // Position at origin and size to cover screen
+        x: 0,
+        y: 0,
+        width: screenWidth,
+        height: screenHeight,
         alwaysOnTop: true,
         focus: false,
         skipTaskbar: true,
         visible: true,
         visibleOnAllWorkspaces: true,
+        // Additional options for better overlay behavior
+        resizable: false,
+        maximizable: false,
+        minimizable: false,
+        closable: false,
       });
 
-      overlay.once("tauri://created", () => {
+      overlay.once("tauri://created", async () => {
         overlayRef.current = overlay;
+        // Make the overlay click-through so users can interact with content beneath
+        try {
+          await overlay.setIgnoreCursorEvents(true);
+        } catch (e) {
+          console.warn("Failed to set ignore cursor events:", e);
+        }
         setTimeout(emitOverlayState, 100);
       });
 

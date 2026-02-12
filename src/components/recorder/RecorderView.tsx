@@ -1,14 +1,18 @@
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useOverlayWindow } from "@/hooks/useOverlayWindow";
 import { FolderOpen, Film, X, CheckCircle2 } from "lucide-react";
-import SourceSelector from "@/components/recorder/SourceSelector";
 import RecordingControls from "@/components/recorder/RecordingControls";
-import RecordingPreview from "@/components/recorder/RecordingPreview";
+import SceneBar from "@/components/recorder/SceneBar";
+import SceneCanvas from "@/components/recorder/SceneCanvas";
+import SourceList from "@/components/recorder/SourceList";
+import SourcePicker from "@/components/recorder/SourcePicker";
 import { useRecorderStore } from "@/stores/recorderStore";
 import { useUIStore } from "@/stores/uiStore";
 import { useEditorStore } from "@/stores/editorStore";
+import { useSourceActions } from "@/hooks/useSourceActions";
 import type { Effect } from "@/types/project";
+import type { SceneSource } from "@/types/capture";
 
 /** Zoom marker as returned by the Rust backend (start_ms/end_ms = zoom in/out) */
 interface ZoomMarker {
@@ -130,28 +134,65 @@ function PostRecordingBanner() {
 export default function RecorderView() {
   useOverlayWindow();
 
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const { addSource } = useSourceActions();
+
+  const handleAddSource = useCallback(
+    (source: SceneSource) => {
+      // Convert SceneSource from capture types to scene store Source
+      addSource({
+        type: source.type as "window" | "screen" | "camera" | "image" | "text",
+        sourceId: source.sourceId,
+        name: source.name,
+        x: source.x,
+        y: source.y,
+        width: source.width,
+        height: source.height,
+        visible: source.visible,
+        locked: false,
+      });
+      setPickerOpen(false);
+    },
+    [addSource]
+  );
+
   return (
     <div className="flex flex-col h-full p-4 gap-4 no-select">
-      {/* Header with source selectors */}
-      <header className="flex items-center justify-between">
-        <h1 className="text-lg font-semibold text-neutral-100">Recorder</h1>
+      {/* Header with title and scene bar */}
+      <header className="flex flex-col gap-3">
+        <div className="flex items-center justify-between">
+          <h1 className="text-lg font-semibold text-neutral-100">Recorder</h1>
+        </div>
+        <SceneBar />
       </header>
 
       {/* Post-recording banner */}
       <PostRecordingBanner />
 
-      {/* Source selectors row */}
-      <section className="shrink-0">
-        <SourceSelector />
-      </section>
+      {/* Main content area */}
+      <div className="flex-1 flex gap-4 min-h-0">
+        {/* Canvas area (takes most space) */}
+        <div className="flex-1 min-w-0">
+          <SceneCanvas />
+        </div>
 
-      {/* Preview area (takes remaining space) */}
-      <RecordingPreview />
+        {/* Source list sidebar */}
+        <aside className="w-56 shrink-0 flex flex-col bg-neutral-900/50 rounded-xl border border-neutral-800 p-3">
+          <SourceList onAddSourceClick={() => setPickerOpen(true)} />
+        </aside>
+      </div>
 
       {/* Recording controls bar */}
       <footer className="shrink-0 border-t border-neutral-800 pt-2">
         <RecordingControls />
       </footer>
+
+      {/* Source picker modal */}
+      <SourcePicker
+        open={pickerOpen}
+        onOpenChange={setPickerOpen}
+        onAddSource={handleAddSource}
+      />
     </div>
   );
 }
