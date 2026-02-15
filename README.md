@@ -4,8 +4,30 @@ A desktop screen recorder and video editor built with [Tauri](https://tauri.app/
 
 > **Note:** AutoEditor is currently in early development (v0.1.0). Expect breaking changes and missing features.
 
-<!-- TODO: Add a screenshot or demo GIF here -->
-<!-- ![AutoEditor Screenshot](docs/screenshots/editor.png) -->
+
+## Screenshots
+<img width="1490" height="862" alt="image" src="https://github.com/user-attachments/assets/caa10336-e21e-4c79-ad1d-944ff8fae891" />
+
+<img width="1490" height="862" alt="image" src="https://github.com/user-attachments/assets/55e0932f-e70e-4e6c-9acc-40961b109e8d" />
+
+<img width="1490" height="862" alt="image" src="https://github.com/user-attachments/assets/16f6cdfe-4e31-422f-98b2-75fa3a4d5c88" />
+
+<img width="1490" height="862" alt="image" src="https://github.com/user-attachments/assets/185a6e13-0a72-40de-be98-48d9f0eadb75" />
+
+<img width="1490" height="862" alt="image" src="https://github.com/user-attachments/assets/51f38013-3902-427a-a9f3-987b2e8f5861" />
+
+<img width="1481" height="278" alt="image" src="https://github.com/user-attachments/assets/ce42f056-035a-4eee-9a4b-28f3b6b63f88" />
+
+<img width="1481" height="857" alt="image" src="https://github.com/user-attachments/assets/7e18c142-d7d4-4fe8-808e-f96761e84995" />
+
+<img width="1481" height="857" alt="image" src="https://github.com/user-attachments/assets/925e0f2e-7888-45d5-ab3b-61de8e8b1a8c" />
+
+<img width="410" height="518" alt="image" src="https://github.com/user-attachments/assets/c342d933-4d68-422a-83a5-beaf64228d5e" />
+
+
+<img width="1305" height="826" alt="image" src="https://github.com/user-attachments/assets/a87cc91d-2c47-481b-bda9-a61a8fc67957" />
+
+<img width="1305" height="826" alt="image" src="https://github.com/user-attachments/assets/9d1495ff-f2fe-4857-b025-6ea92fe90f82" />
 
 ## Features
 
