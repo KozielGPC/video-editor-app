@@ -2,6 +2,7 @@ import { useRef, useState, useEffect, useCallback } from "react";
 import { Film, FolderOpen } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useEditorStore } from "@/stores/editorStore";
+import { probeMedia } from "@/lib/ffmpeg";
 import PreviewCanvas from "./PreviewCanvas";
 import Inspector from "./Inspector";
 import Timeline from "./Timeline";
@@ -149,7 +150,9 @@ export default function EditorView() {
       });
       if (selected) {
         const filePath = typeof selected === "string" ? selected : selected;
-        createProjectFromRecording(filePath);
+        const mediaInfo = await probeMedia(filePath);
+        const durationSec = mediaInfo.duration_ms / 1000;
+        createProjectFromRecording(filePath, durationSec);
       }
     } catch (err) {
       console.error("Failed to open file:", err);

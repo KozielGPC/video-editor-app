@@ -41,6 +41,7 @@ export default function Timeline() {
   const {
     project,
     playheadPosition,
+    isPlaying,
     setPlayheadPosition,
     timelineZoom,
     setTimelineZoom,
@@ -201,7 +202,10 @@ export default function Timeline() {
               {/* Playhead indicator on ruler */}
               <div
                 className="absolute top-0 z-10"
-                style={{ left: playheadPosition * timelineZoom }}
+                style={{
+                  left: playheadPosition * timelineZoom,
+                  transition: isPlaying ? "left 80ms linear" : undefined,
+                }}
               >
                 <svg
                   width="10"
@@ -291,7 +295,10 @@ export default function Timeline() {
           {/* ── Playhead line ────────────────────────────────────── */}
           <div
             className="absolute top-0 bottom-0 w-0.5 bg-red-500 z-30 pointer-events-none"
-            style={{ left: playheadLeft }}
+            style={{
+              left: playheadLeft,
+              transition: isPlaying ? "left 80ms linear" : undefined,
+            }}
           />
         </div>
       </div>

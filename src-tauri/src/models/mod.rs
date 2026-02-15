@@ -192,7 +192,7 @@ pub struct ExportConfig {
     pub format: String,
     pub width: u32,
     pub height: u32,
-    pub video_bitrate: String,
+    pub crf: u32,
     pub audio_bitrate: String,
     pub fps: f64,
 }

@@ -77,3 +77,13 @@ textarea,
 .animate-pulse-recording {
   animation: pulse-recording 1.5s ease-in-out infinite;
 }
+
+/* ── Indeterminate progress bar ──────────────────────────────── */
+@keyframes indeterminate {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(300%);
+  }
+}

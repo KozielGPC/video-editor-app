@@ -13,6 +13,7 @@ import {
   Download,
 } from "lucide-react";
 import { useEditorStore, type Tool } from "@/stores/editorStore";
+import { useUIStore } from "@/stores/uiStore";
 
 // ─── Tool definitions ────────────────────────────────────────────────────────
 
@@ -119,10 +120,7 @@ function Toolbar() {
         <ToolBtn
           icon={Download}
           tooltip="Export"
-          onClick={() => {
-            // TODO: open export dialog
-            console.log("Export");
-          }}
+          onClick={() => useUIStore.getState().setShowExportDialog(true)}
         />
       </div>
     </Tooltip.Provider>

@@ -67,12 +67,14 @@ pub fn start_export(
         }
     }
 
-    // Video codec
+    // Video codec (CRF-based quality)
     args.extend_from_slice(&[
         "-c:v".into(),
         "libx264".into(),
-        "-b:v".into(),
-        config.video_bitrate.clone(),
+        "-crf".into(),
+        config.crf.to_string(),
+        "-preset".into(),
+        "medium".into(),
         "-r".into(),
         config.fps.to_string(),
         "-s".into(),
@@ -96,11 +98,13 @@ pub fn start_export(
     // Output path
     args.push(config.output_path.clone());
 
-    // Compute total duration for progress percentage
+    // Compute total duration for progress percentage (video tracks only,
+    // matching the filter graph which only uses video-track clips).
     let total_duration_sec: f64 = config
         .project
         .tracks
         .iter()
+        .filter(|t| !t.muted && !t.locked && t.track_type == "video")
         .flat_map(|t| &t.clips)
         .map(|c| (c.source_end - c.source_start) as f64 / 1000.0)
         .sum();

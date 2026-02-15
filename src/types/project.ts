@@ -108,14 +108,19 @@ export interface WebcamOverlayData {
   isSelected?: boolean;
 }
 
+/**
+ * Media file metadata returned by the Rust `probe_media` command.
+ *
+ * Field names match the Rust `MediaInfo` struct (serde snake_case).
+ */
 export interface MediaInfo {
-  duration: number;
+  path: string;
+  duration_ms: number;
   width: number;
   height: number;
-  fps: number;
   codec: string;
-  audioCodec?: string;
-  fileSize: number;
+  has_audio: boolean;
+  has_video: boolean;
 }
 
 // ─── Export Types ────────────────────────────────────────────────────────────

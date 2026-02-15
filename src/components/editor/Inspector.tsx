@@ -17,8 +17,14 @@ import {
   Clock,
   Move,
   Maximize2,
+  Loader2,
+  Check,
+  AlertCircle,
+  Info,
 } from "lucide-react";
 import { useEditorStore } from "@/stores/editorStore";
+import { removeSilence } from "@/lib/ffmpeg";
+import type { Segment } from "@/lib/ffmpeg";
 import type { Effect, Overlay } from "@/types/project";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -34,7 +40,6 @@ export default function Inspector() {
     project,
     selectedClipId,
     selectedTrackId,
-    playheadPosition,
     updateClip,
     addEffect,
     updateEffect,
@@ -197,10 +202,7 @@ export default function Inspector() {
 
               <AddEffectButton
                 clipDuration={clipDuration}
-                playheadOffset={Math.max(
-                  0,
-                  playheadPosition - selectedClip.trackPosition,
-                )}
+                clipTrackPosition={selectedClip.trackPosition}
                 onAdd={(effect) =>
                   addEffect(selectedTrack.id, selectedClip.id, effect)
                 }
@@ -462,15 +464,25 @@ function EffectSlider({
 
 function AddEffectButton({
   clipDuration,
-  playheadOffset,
+  clipTrackPosition,
   onAdd,
 }: {
   clipDuration: number;
-  playheadOffset: number;
+  clipTrackPosition: number;
   onAdd: (e: Effect) => void;
 }) {
-  // Default the startTime to the playhead position within the clip
-  const defaultStart = Math.min(playheadOffset, Math.max(clipDuration - 1, 0));
+  // Read playheadPosition lazily from the store snapshot (not a subscription —
+  // avoids re-rendering this component 12× per second during playback).
+  const computeStart = (): number => {
+    const pos = useEditorStore.getState().playheadPosition;
+    const offset = Math.max(0, pos - clipTrackPosition);
+    return Math.min(offset, Math.max(clipDuration - 1, 0));
+  };
+  const [defaultStart, setDefaultStart] = useState(computeStart);
+  // Refresh when the dropdown opens
+  const handleOpenChange = (open: boolean) => {
+    if (open) setDefaultStart(computeStart());
+  };
 
   const presets: { label: string; icon: React.ReactNode; type: Effect["type"]; params: Record<string, number> }[] = [
     { label: "Zoom In", icon: <ZoomIn size={13} />, type: "zoom", params: { scale: 1.3, x: 50, y: 50 } },
@@ -480,7 +492,7 @@ function AddEffectButton({
   ];
 
   return (
-    <DropdownMenu.Root>
+    <DropdownMenu.Root onOpenChange={handleOpenChange}>
       <DropdownMenu.Trigger asChild>
         <button className="flex items-center gap-1.5 text-[11px] text-blue-400 hover:text-blue-300 mt-2 transition-colors font-medium">
           <Plus size={12} /> Add Effect
@@ -607,20 +619,51 @@ function AddOverlayButton({ onAdd }: { onAdd: (o: Overlay) => void }) {
 
 // ─── Silence Detection Section ───────────────────────────────────────────────
 
+const DEFAULT_SILENCE_THRESHOLD_DB = -50;
+const DEFAULT_MIN_SILENCE_DURATION_MS = 200;
+const DEFAULT_PADDING_MS = 100;
+
+type SilenceStatus = "idle" | "extracting" | "detecting" | "done" | "error";
+
 function SilenceDetection() {
-  const [threshold, setThreshold] = useState(-40);
-  const [minDuration, setMinDuration] = useState(500);
-  const [padding, setPadding] = useState(100);
+  const { project, selectedClipId, selectedTrackId, applySilenceRemoval } =
+    useEditorStore();
 
-  const handleDetect = () => {
-    console.log("Detect silence:", { threshold, minDuration, padding });
-    // TODO: call Tauri command for silence detection
+  const [threshold, setThreshold] = useState(DEFAULT_SILENCE_THRESHOLD_DB);
+  const [minDuration, setMinDuration] = useState(DEFAULT_MIN_SILENCE_DURATION_MS);
+  const [padding, setPadding] = useState(DEFAULT_PADDING_MS);
+  const [status, setStatus] = useState<SilenceStatus>("idle");
+  const [error, setError] = useState<string | null>(null);
+  const [segmentCount, setSegmentCount] = useState(0);
+
+  const selectedTrack = project?.tracks.find((t) => t.id === selectedTrackId);
+  const selectedClip = selectedTrack?.clips.find((c) => c.id === selectedClipId);
+  const asset = project?.assets.find((a) => a.id === selectedClip?.assetId);
+  const hasAsset = !!asset?.path;
+
+  const handleRemoveSilence = async () => {
+    if (!asset) return;
+    setStatus("extracting");
+    setError(null);
+    setSegmentCount(0);
+    try {
+      setStatus("detecting");
+      const segments = await removeSilence(
+        asset.path,
+        threshold,
+        minDuration,
+        padding,
+      );
+      setSegmentCount(segments.length);
+      applySilenceRemoval(segments);
+      setStatus("done");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setStatus("error");
+    }
   };
 
-  const handleRemove = () => {
-    console.log("Remove silent parts:", { threshold, minDuration, padding });
-    // TODO: call Tauri command for silence removal
-  };
+  const isProcessing = status === "extracting" || status === "detecting";
 
   return (
     <Section label="Silence Removal">
@@ -693,23 +736,75 @@ function SilenceDetection() {
         </Slider.Root>
       </div>
 
-      {/* Buttons */}
-      <div className="flex gap-2 mt-2">
+      {/* Error feedback */}
+      {status === "error" && error && (
+        <div className="flex items-start gap-1.5 text-[11px] text-red-400 bg-red-950/30 rounded p-2 mt-2 border border-red-900/50">
+          <AlertCircle size={13} className="shrink-0 mt-px" />
+          <span className="break-all">{error}</span>
+        </div>
+      )}
+
+      {/* Success feedback */}
+      {status === "done" && (
+        <div className="text-[11px] bg-emerald-950/30 rounded p-2 mt-2 border border-emerald-900/50 space-y-0.5">
+          <div className="flex items-center gap-1.5 text-emerald-400 font-medium">
+            <Check size={13} />
+            Silence removed — {segmentCount} speech segments applied to timeline
+          </div>
+          <p className="text-neutral-500 pl-[19px]">
+            Original file untouched. Use Export to render the final video.
+          </p>
+        </div>
+      )}
+
+      {/* Processing feedback — animated progress bar */}
+      {isProcessing && (
+        <div className="mt-2 space-y-2">
+          <div className="flex items-center gap-2 text-[11px] text-blue-400">
+            <Loader2 size={13} className="animate-spin shrink-0" />
+            <span>
+              {status === "extracting"
+                ? "Extracting audio…"
+                : "Detecting silence…"}
+            </span>
+          </div>
+          {/* Indeterminate progress bar */}
+          <div className="h-1.5 w-full bg-neutral-800 rounded-full overflow-hidden">
+            <div className="h-full bg-blue-500 rounded-full animate-[indeterminate_1.5s_ease-in-out_infinite] w-1/3" />
+          </div>
+          <p className="text-[10px] text-neutral-600">
+            Analysing audio — the original video is not modified
+          </p>
+        </div>
+      )}
+
+      {/* Action button */}
+      <div className="mt-2">
         <button
-          onClick={handleDetect}
-          className="flex-1 px-2 py-1.5 text-[11px] font-medium bg-neutral-800 hover:bg-neutral-700
-            text-neutral-200 rounded border border-neutral-700 transition-colors"
+          onClick={handleRemoveSilence}
+          disabled={!hasAsset || isProcessing}
+          className="w-full flex items-center justify-center gap-1.5 px-3 py-2 text-[11px] font-medium
+            bg-blue-600 hover:bg-blue-500 active:bg-blue-700
+            text-white rounded transition-colors shadow-lg shadow-blue-600/20
+            disabled:opacity-40 disabled:pointer-events-none"
         >
-          Detect Silence
-        </button>
-        <button
-          onClick={handleRemove}
-          className="flex-1 px-2 py-1.5 text-[11px] font-medium bg-blue-600 hover:bg-blue-500
-            text-white rounded transition-colors"
-        >
-          Remove Silent Parts
+          {isProcessing ? (
+            <>
+              <Loader2 size={12} className="animate-spin" />
+              Detecting silence…
+            </>
+          ) : (
+            "Remove Silent Parts"
+          )}
         </button>
       </div>
+
+      {/* Hint when no asset */}
+      {!hasAsset && (
+        <p className="text-[10px] text-neutral-600 mt-1.5">
+          Select a clip with an audio source to remove silence
+        </p>
+      )}
     </Section>
   );
 }

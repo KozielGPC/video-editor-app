@@ -194,10 +194,15 @@ pub fn build_export_filter_complex(project: &ProjectData) -> ExportGraph {
 
     let (proj_w, proj_h) = project.resolution;
 
-    // Collect all clips across all tracks (flatten; sorted by track_position)
+    // Collect clips from VIDEO tracks only.
+    // Audio tracks duplicate the same segments (especially after silence removal)
+    // and each video clip already carries audio via [input:a].
     let mut all_clips: Vec<&ClipData> = Vec::new();
     for track in &project.tracks {
         if track.muted || track.locked {
+            continue;
+        }
+        if track.track_type != "video" {
             continue;
         }
         for clip in &track.clips {
@@ -355,6 +360,35 @@ pub fn extract_thumbnails(
 // Audio extraction
 // ---------------------------------------------------------------------------
 
+/// Extract audio as a lightweight WAV for silence detection (PCM s16le, 16 kHz, mono).
+///
+/// This is ~5× smaller than stereo 44.1 kHz and perfectly sufficient for
+/// energy-based silence detection. A 17-minute file produces ~32 MB.
+pub fn extract_audio_to_wav_light(video_path: &str, output_path: &str) -> Result<(), String> {
+    let status = Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-i",
+            video_path,
+            "-vn",
+            "-acodec",
+            "pcm_s16le",
+            "-ar",
+            "16000",
+            "-ac",
+            "1",
+            output_path,
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|e| format!("ffmpeg extract audio: {e}"))?;
+    if !status.success() {
+        return Err("ffmpeg audio extraction failed".to_string());
+    }
+    Ok(())
+}
+
 /// Extract audio from a video file as WAV (PCM s16le, 44100 Hz, stereo).
 pub fn extract_audio_to_wav(video_path: &str, output_path: &str) -> Result<(), String> {
     let status = Command::new("ffmpeg")
@@ -378,6 +412,81 @@ pub fn extract_audio_to_wav(video_path: &str, output_path: &str) -> Result<(), S
 
     if !status.success() {
         return Err("ffmpeg extract audio failed".to_string());
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Video assembly (silence removal)
+// ---------------------------------------------------------------------------
+
+/// Assemble a new video by trimming and concatenating non-silent segments.
+///
+/// Mirrors the Python `assemble_video` function: builds a single FFmpeg
+/// `filter_complex` that trims video+audio for each segment, then concatenates.
+pub fn assemble_video_from_segments(
+    input_path: &str,
+    output_path: &str,
+    segments: &[crate::models::Segment],
+) -> Result<(), String> {
+    use std::io::Read;
+
+    if segments.is_empty() {
+        return Err("No segments to assemble".into());
+    }
+
+    let mut filter_parts: Vec<String> = Vec::new();
+    let mut concat_inputs: Vec<String> = Vec::new();
+
+    for (i, seg) in segments.iter().enumerate() {
+        let start = seg.start_seconds();
+        let end = seg.end_seconds();
+        let vl = format!("v{i}");
+        let al = format!("a{i}");
+
+        filter_parts.push(format!(
+            "[0:v]trim=start={start:.3}:end={end:.3},setpts=PTS-STARTPTS[{vl}]"
+        ));
+        filter_parts.push(format!(
+            "[0:a]atrim=start={start:.3}:end={end:.3},asetpts=PTS-STARTPTS[{al}]"
+        ));
+        concat_inputs.push(format!("[{vl}][{al}]"));
+    }
+
+    let n = segments.len();
+    let concat_filter =
+        format!("{}concat=n={n}:v=1:a=1[outv][outa]", concat_inputs.join(""));
+    filter_parts.push(concat_filter);
+
+    let filter_complex = filter_parts.join(";\n");
+
+    let mut child = Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-i",
+            input_path,
+            "-filter_complex",
+            &filter_complex,
+            "-map",
+            "[outv]",
+            "-map",
+            "[outa]",
+            output_path,
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("ffmpeg assemble spawn: {e}"))?;
+
+    let status = child.wait().map_err(|e| format!("ffmpeg wait: {e}"))?;
+
+    if !status.success() {
+        let mut stderr_buf = String::new();
+        if let Some(mut stderr) = child.stderr.take() {
+            stderr.read_to_string(&mut stderr_buf).ok();
+        }
+        return Err(format!("FFmpeg assemble failed: {stderr_buf}"));
     }
 
     Ok(())

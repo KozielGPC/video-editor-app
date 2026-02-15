@@ -2,7 +2,21 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { Loader2, X, CheckCircle2 } from "lucide-react";
-import type { ExportProgress as ExportProgressData } from "@/types/project";
+
+/** Payload emitted by the Rust `start_export` command via `export-progress` events. */
+interface RustExportEvent {
+  percent: number;
+  done: boolean;
+  error: string | null;
+}
+
+/** Internal progress state used by this component. */
+interface ExportProgressData {
+  percent: number;
+  elapsed: number;
+  estimated: number;
+  status: string;
+}
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                              */
@@ -43,25 +57,43 @@ export default function ExportProgress({
   const [isComplete, setIsComplete] = useState(false);
   const unlistenRef = useRef<UnlistenFn | null>(null);
 
+  // Track start time for ETA calculation
+  const startTimeRef = useRef<number>(0);
+
   /* Listen to Tauri export-progress events */
   useEffect(() => {
     if (!isVisible) return;
 
     setIsComplete(false);
     setProgress({ percent: 0, elapsed: 0, estimated: 0, status: "Preparing..." });
+    startTimeRef.current = Date.now();
 
     let cancelled = false;
 
     const setup = async () => {
-      const unlisten = await listen<ExportProgressData>(
+      const unlisten = await listen<RustExportEvent>(
         "export-progress",
         (event) => {
           if (cancelled) return;
-
-          const data = event.payload;
-          setProgress(data);
-
-          if (data.percent >= 100) {
+          const raw = event.payload;
+          if (raw.error) {
+            setProgress((prev) => ({ ...prev, percent: 0, status: `Error: ${raw.error}` }));
+            setIsComplete(true);
+            return;
+          }
+          const elapsedSec = (Date.now() - startTimeRef.current) / 1000;
+          const pct = Math.max(raw.percent, 0.1); // avoid division by zero
+          const estimatedTotalSec = pct > 0 ? (elapsedSec / pct) * 100 : 0;
+          const remainingSec = Math.max(0, estimatedTotalSec - elapsedSec);
+          setProgress({
+            percent: raw.percent,
+            elapsed: elapsedSec,
+            estimated: estimatedTotalSec,
+            status: raw.done
+              ? "Export complete"
+              : `Exporting… ${raw.percent}%`,
+          });
+          if (raw.done || raw.percent >= 100) {
             setIsComplete(true);
           }
         }
@@ -73,10 +105,22 @@ export default function ExportProgress({
       }
     };
 
+    // Also tick elapsed time every second so the UI stays alive
+    const elapsedInterval = setInterval(() => {
+      if (cancelled) return;
+      setProgress((prev) => {
+        const elapsedSec = (Date.now() - startTimeRef.current) / 1000;
+        const pct = Math.max(prev.percent, 0.1);
+        const estimatedTotalSec = pct > 0 ? (elapsedSec / pct) * 100 : 0;
+        return { ...prev, elapsed: elapsedSec, estimated: estimatedTotalSec };
+      });
+    }, 1000);
+
     setup();
 
     return () => {
       cancelled = true;
+      clearInterval(elapsedInterval);
       unlistenRef.current?.();
       unlistenRef.current = null;
     };
@@ -145,11 +189,11 @@ export default function ExportProgress({
                 {formatDuration(progress.elapsed)}
               </span>
             </span>
-            {!isComplete && progress.estimated > 0 && (
+            {!isComplete && progress.percent > 1 && (
               <span>
                 Remaining:{" "}
                 <span className="text-neutral-300 font-mono">
-                  {formatDuration(progress.estimated - progress.elapsed)}
+                  ~{formatDuration(Math.max(0, progress.estimated - progress.elapsed))}
                 </span>
               </span>
             )}

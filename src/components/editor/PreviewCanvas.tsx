@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect, useMemo } from "react";
+import { useRef, useState, useEffect, useMemo, useCallback } from "react";
 import {
   Film,
   Play,
@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 import { useEditorStore } from "@/stores/editorStore";
 import { streamUrl } from "@/lib/stream";
-import type { Effect } from "@/types/project";
+import type { Clip, Asset, Effect } from "@/types/project";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -61,6 +61,24 @@ function computeZoomTransform(
   return { scale, originX, originY, isActive };
 }
 
+/** A clip ready for playback with its resolved asset and pre-computed end. */
+interface PlaybackClip {
+  clip: Clip;
+  asset: Asset;
+  clipEnd: number; // trackPosition + duration (timeline end)
+}
+
+/** CSS for the hidden decode-only video elements. */
+const HIDDEN_VIDEO_STYLE: React.CSSProperties = {
+  position: "absolute",
+  width: 1,
+  height: 1,
+  opacity: 0,
+  pointerEvents: "none",
+  top: 0,
+  left: 0,
+};
+
 // ─── Component ───────────────────────────────────────────────────────────────
 
 export default function PreviewCanvas() {
@@ -73,9 +91,32 @@ export default function PreviewCanvas() {
     togglePlayback,
   } = useEditorStore();
 
-  const videoRef = useRef<HTMLVideoElement>(null);
+  // Canvas = the only visible rendering surface.
+  // Two hidden <video> elements act as frame decoders — one active, one standby.
+  // ctx.drawImage(vid) copies the decoded frame to the canvas each animation
+  // frame. At clip boundaries the standby (already pre-seeked) is drawn instead,
+  // giving a truly gapless visual transition with zero play() latency.
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const videoRefA = useRef<HTMLVideoElement>(null);
+  const videoRefB = useRef<HTMLVideoElement>(null);
+  /** Which decoder element is currently active: 'A' or 'B'. */
+  const activeElRef = useRef<"A" | "B">("A");
   const containerRef = useRef<HTMLDivElement>(null);
   const animFrameRef = useRef(0);
+
+  /** Return the video element for a given key. */
+  const getVid = (key: "A" | "B"): HTMLVideoElement | null =>
+    key === "A" ? videoRefA.current : videoRefB.current;
+
+  /** Paint a video element's current frame onto the canvas. */
+  const drawFrame = useCallback((vidOverride?: HTMLVideoElement | null) => {
+    const canvas = canvasRef.current;
+    const vid = vidOverride ?? (activeElRef.current === "A" ? videoRefA.current : videoRefB.current);
+    if (!canvas || !vid || vid.readyState < 2) return; // HAVE_CURRENT_DATA
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.drawImage(vid, 0, 0, canvas.width, canvas.height);
+  }, []);
 
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
 
@@ -146,39 +187,181 @@ export default function PreviewCanvas() {
     return streamUrl(activeVideo.asset.path);
   }, [activeVideo?.asset.path]);
 
-  // ── Seek video when not playing ─────────────────────────────────────────
+  // ── Playback state (persists across animation frames, bypasses React) ───
+
+  const playbackRef = useRef<{
+    clips: PlaybackClip[];
+    currentIdx: number;
+    preSeekDone: boolean;
+  } | null>(null);
+
+  /** Throttle React state updates during playback. */
+  const PLAYBACK_THROTTLE_MS = 80; // ~12 fps for React UI updates
+  const lastStateUpdateRef = useRef(0);
+
+  // ── Seek video when scrubbing (not playing) + draw to canvas ───────────
 
   useEffect(() => {
-    const vid = videoRef.current;
-    if (!vid || !activeVideo || isPlaying) return;
-    if (Math.abs(vid.currentTime - activeVideo.sourceTime) > 0.05) {
-      vid.currentTime = activeVideo.sourceTime;
+    if (isPlaying) return;
+    const vid = getVid(activeElRef.current);
+    if (!vid || !activeVideo) return;
+    const targetTime = activeVideo.sourceTime;
+    const needsSeek = Math.abs(vid.currentTime - targetTime) > 0.05;
+    if (needsSeek) {
+      vid.currentTime = targetTime;
+      vid.addEventListener("seeked", () => drawFrame(), { once: true });
     }
-  }, [activeVideo, isPlaying]);
+    // Draw immediately (shows last decoded frame; seeked callback refreshes)
+    drawFrame();
+  }, [activeVideo, isPlaying, drawFrame]);
 
   // ── Playback animation loop ─────────────────────────────────────────────
+  // Two hidden <video> decoders play natively.  Every animation frame we
+  // blit the active decoder's current frame to the canvas via drawImage().
+  // At clip boundaries we instantly blit the standby decoder's pre-seeked
+  // frame — the transition is a simple pixel copy (~0 ms), not a play()
+  // call which carries 50-100 ms audio-pipeline startup latency.
+
+  const stopPlayback = useCallback(() => {
+    setIsPlaying(false);
+  }, [setIsPlaying]);
+
+  /** How far (seconds) before a clip boundary we pre-seek the standby. */
+  const PRE_SEEK_WINDOW = 0.8;
 
   useEffect(() => {
     if (!isPlaying) {
       cancelAnimationFrame(animFrameRef.current);
-      videoRef.current?.pause();
+      const vid = getVid(activeElRef.current);
+      if (vid) { vid.pause(); vid.muted = true; }
+      playbackRef.current = null;
+      drawFrame(); // freeze the canvas on the stopped frame
       return;
     }
-
-    const vid = videoRef.current;
-    vid?.play().catch(() => {});
-
-    const startWall = performance.now();
-    const startPos = playheadPosition;
-
+    const vid = getVid(activeElRef.current);
+    if (!vid || !project) return;
+    // Build a sorted list of clips from video tracks only
+    const clips: PlaybackClip[] = [];
+    for (const track of project.tracks) {
+      if (track.type !== "video" || track.muted) continue;
+      for (const clip of track.clips) {
+        const asset = project.assets.find((a) => a.id === clip.assetId);
+        if (asset) {
+          clips.push({
+            clip,
+            asset,
+            clipEnd: clip.trackPosition + (clip.sourceEnd - clip.sourceStart),
+          });
+        }
+      }
+    }
+    clips.sort((a, b) => a.clip.trackPosition - b.clip.trackPosition);
+    if (clips.length === 0) {
+      stopPlayback();
+      return;
+    }
+    // Find clip at the current playhead position
+    let idx = clips.findIndex(
+      (c) => playheadPosition >= c.clip.trackPosition && playheadPosition < c.clipEnd,
+    );
+    if (idx < 0) idx = 0;
+    playbackRef.current = { clips, currentIdx: idx, preSeekDone: false };
+    lastStateUpdateRef.current = 0; // force immediate first update
+    // Active decoder: unmuted, plays audio + video
+    vid.muted = false;
+    const initialSrc = streamUrl(clips[idx].asset.path);
+    if (!vid.src || vid.dataset.assetPath !== clips[idx].asset.path) {
+      vid.src = initialSrc;
+      vid.dataset.assetPath = clips[idx].asset.path;
+    }
+    // Standby decoder: muted, idle
+    const standby = getVid(activeElRef.current === "A" ? "B" : "A");
+    if (standby) standby.muted = true;
+    // Seek to the correct source position and start
+    const initialSourceTime =
+      clips[idx].clip.sourceStart + (playheadPosition - clips[idx].clip.trackPosition);
+    vid.currentTime = Math.max(clips[idx].clip.sourceStart, initialSourceTime);
+    vid.play().catch(() => {});
     const tick = () => {
-      const elapsed = (performance.now() - startWall) / 1000;
-      setPlayheadPosition(startPos + elapsed);
+      const pb = playbackRef.current;
+      if (!pb) return;
+      const c = pb.clips[pb.currentIdx];
+      if (!c) {
+        setPlayheadPosition(totalDuration);
+        stopPlayback();
+        return;
+      }
+      const activeVid = getVid(activeElRef.current)!;
+      // Blit the active decoder's frame to the canvas every tick
+      drawFrame();
+      // While the browser is seeking, keep polling (canvas shows last frame)
+      if (activeVid.seeking) {
+        animFrameRef.current = requestAnimationFrame(tick);
+        return;
+      }
+      const srcTime = activeVid.currentTime;
+      // ── Pre-seek the standby decoder before the boundary ───────────
+      const timeToEnd = c.clip.sourceEnd - srcTime;
+      if (timeToEnd < PRE_SEEK_WINDOW && !pb.preSeekDone) {
+        const nextIdx = pb.currentIdx + 1;
+        if (nextIdx < pb.clips.length) {
+          const standbyKey = activeElRef.current === "A" ? "B" : "A";
+          const standbyVid = getVid(standbyKey);
+          if (standbyVid) {
+            const next = pb.clips[nextIdx];
+            if (standbyVid.dataset.assetPath !== next.asset.path) {
+              standbyVid.src = streamUrl(next.asset.path);
+              standbyVid.dataset.assetPath = next.asset.path;
+            }
+            standbyVid.currentTime = next.clip.sourceStart;
+          }
+          pb.preSeekDone = true;
+        }
+      }
+      // ── Clip boundary: instant visual swap via canvas blit ─────────
+      if (srcTime >= c.clip.sourceEnd - 0.016) {
+        const nextIdx = pb.currentIdx + 1;
+        if (nextIdx >= pb.clips.length) {
+          setPlayheadPosition(totalDuration);
+          stopPlayback();
+          return;
+        }
+        const standbyKey = activeElRef.current === "A" ? "B" : "A";
+        const standbyVid = getVid(standbyKey);
+        // ** GAPLESS: blit the standby's pre-decoded frame to the canvas **
+        // This is a raw pixel copy — zero latency, no play() startup cost.
+        if (standbyVid) drawFrame(standbyVid);
+        // Tear down old decoder
+        activeVid.pause();
+        activeVid.muted = true;
+        // Activate new decoder
+        activeElRef.current = standbyKey;
+        if (standbyVid) {
+          standbyVid.muted = false;
+          standbyVid.play().catch(() => {});
+        }
+        pb.currentIdx = nextIdx;
+        pb.preSeekDone = false;
+        // Force a state update at the boundary
+        setPlayheadPosition(pb.clips[nextIdx].clip.trackPosition);
+        lastStateUpdateRef.current = performance.now();
+        animFrameRef.current = requestAnimationFrame(tick);
+        return;
+      }
+      // ── Normal frame: throttle React state updates ─────────────────
+      const now = performance.now();
+      if (now - lastStateUpdateRef.current >= PLAYBACK_THROTTLE_MS) {
+        lastStateUpdateRef.current = now;
+        const newPos = c.clip.trackPosition + (srcTime - c.clip.sourceStart);
+        setPlayheadPosition(Math.max(0, newPos));
+      }
       animFrameRef.current = requestAnimationFrame(tick);
     };
-
     animFrameRef.current = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(animFrameRef.current);
+    return () => {
+      cancelAnimationFrame(animFrameRef.current);
+      playbackRef.current = null;
+    };
     // Intentionally limited deps – we only restart the loop when play state toggles
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isPlaying]);
@@ -232,7 +415,9 @@ export default function PreviewCanvas() {
             previewDims={previewDims}
             playheadPosition={playheadPosition}
             project={project}
-            videoRef={videoRef}
+            canvasRef={canvasRef}
+            videoRefA={videoRefA}
+            videoRefB={videoRefB}
             videoSrc={videoSrc}
           />
         ) : (
@@ -293,14 +478,18 @@ function ZoomablePreview({
   previewDims,
   playheadPosition,
   project,
-  videoRef,
+  canvasRef,
+  videoRefA,
+  videoRefB,
   videoSrc,
 }: {
   activeVideo: { clip: import("@/types/project").Clip; asset: import("@/types/project").Asset; sourceTime: number };
   previewDims: { width: number; height: number };
   playheadPosition: number;
   project: import("@/types/project").Project;
-  videoRef: React.RefObject<HTMLVideoElement>;
+  canvasRef: React.RefObject<HTMLCanvasElement>;
+  videoRefA: React.RefObject<HTMLVideoElement>;
+  videoRefB: React.RefObject<HTMLVideoElement>;
   videoSrc: string;
 }) {
   const zoom = computeZoomTransform(
@@ -316,7 +505,7 @@ function ZoomablePreview({
     >
       {/* Inner container that receives the zoom transform */}
       <div
-        className="w-full h-full"
+        className="relative w-full h-full"
         style={{
           transform: zoom.isActive ? `scale(${zoom.scale})` : undefined,
           transformOrigin: zoom.isActive
@@ -325,15 +514,33 @@ function ZoomablePreview({
           transition: "transform 0.05s linear",
         }}
       >
+        {/* Canvas — the sole visible rendering surface */}
+        <canvas
+          ref={canvasRef}
+          width={project.resolution.width}
+          height={project.resolution.height}
+          className="w-full h-full"
+          style={{ objectFit: "contain" }}
+        />
+
+        {/* Hidden video decoders — never visible, used only as frame sources
+            for drawImage(). Keeping them in the DOM (tiny, transparent) ensures
+            the browser's hardware decoder stays active. */}
         <video
-          ref={videoRef}
+          ref={videoRefA}
           src={videoSrc}
-          className="w-full h-full object-contain"
+          style={HIDDEN_VIDEO_STYLE}
+          playsInline
+          preload="auto"
+        />
+        <video
+          ref={videoRefB}
+          style={HIDDEN_VIDEO_STYLE}
           playsInline
           preload="auto"
         />
 
-        {/* Overlay compositing layer */}
+        {/* Overlay compositing layer (always on top) */}
         {activeVideo.clip.overlays
           .filter(
             (o) =>
@@ -346,6 +553,7 @@ function ZoomablePreview({
               key={i}
               className="absolute pointer-events-none"
               style={{
+                zIndex: 5,
                 left: `${(overlay.position.x / project.resolution.width) * 100}%`,
                 top: `${(overlay.position.y / project.resolution.height) * 100}%`,
                 width: `${(overlay.size.width / project.resolution.width) * 100}%`,
@@ -369,7 +577,7 @@ function ZoomablePreview({
 
       {/* Zoom indicator badge */}
       {zoom.isActive && (
-        <div className="absolute top-2 right-2 flex items-center gap-1 px-2 py-1 rounded-md bg-blue-600/80 text-white text-[10px] font-medium backdrop-blur-sm pointer-events-none">
+        <div className="absolute top-2 right-2 flex items-center gap-1 px-2 py-1 rounded-md bg-blue-600/80 text-white text-[10px] font-medium backdrop-blur-sm pointer-events-none z-10">
           <ZoomIn size={11} />
           {zoom.scale.toFixed(2)}x
         </div>

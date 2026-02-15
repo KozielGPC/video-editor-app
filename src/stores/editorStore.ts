@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { v4 as uuidv4 } from "uuid";
 import type { Project, Track, Clip, Effect, Overlay, Asset } from "@/types/project";
+import type { Segment } from "@/lib/ffmpeg";
 
 // ─── Public Types ────────────────────────────────────────────────────────────
 
@@ -89,6 +90,9 @@ interface EditorState {
   /* timeline */
   setTimelineZoom: (zoom: number) => void;
   setTool: (tool: Tool) => void;
+
+  /* silence removal */
+  applySilenceRemoval: (segments: Segment[]) => void;
 
   /* history */
   undo: () => void;
@@ -633,6 +637,58 @@ export const useEditorStore = create<EditorState>((set, get) => ({
             : t,
         ),
       },
+    });
+  },
+
+  // ── Silence Removal ──────────────────────────────────────────────────────
+
+  applySilenceRemoval: (segments) => {
+    const { project, selectedClipId, selectedTrackId, _pushHistory } = get();
+    if (!project || !selectedClipId || !selectedTrackId) return;
+    if (segments.length === 0) return;
+    const track = project.tracks.find((t) => t.id === selectedTrackId);
+    if (!track) return;
+    const clip = track.clips.find((c) => c.id === selectedClipId);
+    if (!clip) return;
+    _pushHistory();
+    const sourceStartMs = clip.sourceStart * 1000;
+    const sourceEndMs = clip.sourceEnd * 1000;
+    const clampedSegments = segments
+      .filter((s) => s.endMs > sourceStartMs && s.startMs < sourceEndMs)
+      .map((s) => ({
+        startMs: Math.max(s.startMs, sourceStartMs),
+        endMs: Math.min(s.endMs, sourceEndMs),
+      }));
+    if (clampedSegments.length === 0) return;
+    const updatedTracks = project.tracks.map((t) => {
+      const targetClip = t.clips.find(
+        (c) =>
+          c.assetId === clip.assetId &&
+          Math.abs(c.sourceStart - clip.sourceStart) < 0.001 &&
+          Math.abs(c.sourceEnd - clip.sourceEnd) < 0.001,
+      );
+      if (!targetClip) return t;
+      const otherClips = t.clips.filter((c) => c.id !== targetClip.id);
+      let currentPosition = targetClip.trackPosition;
+      const newClips: Clip[] = clampedSegments.map((segment) => {
+        const segDuration = (segment.endMs - segment.startMs) / 1000;
+        const newClip: Clip = {
+          ...targetClip,
+          id: uuidv4(),
+          sourceStart: segment.startMs / 1000,
+          sourceEnd: segment.endMs / 1000,
+          trackPosition: currentPosition,
+          effects: targetClip.effects.map((e) => ({ ...e })),
+          overlays: targetClip.overlays.map((o) => ({ ...o })),
+        };
+        currentPosition += segDuration;
+        return newClip;
+      });
+      return { ...t, clips: [...otherClips, ...newClips] };
+    });
+    set({
+      project: { ...project, tracks: updatedTracks },
+      selectedClipId: null,
     });
   },
 

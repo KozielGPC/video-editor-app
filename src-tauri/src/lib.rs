@@ -152,6 +152,7 @@ pub fn run() {
             commands::editor::save_project,
             commands::editor::load_project,
             commands::editor::detect_silence,
+            commands::editor::remove_silence,
             // Export
             commands::export::start_export,
             commands::export::cancel_export,

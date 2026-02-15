@@ -1,10 +1,11 @@
 import { useState, useCallback } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { invoke } from "@tauri-apps/api/core";
+import { save as showSaveDialog } from "@tauri-apps/plugin-dialog";
 import { X, Download, Sparkles } from "lucide-react";
 import { useEditorStore } from "@/stores/editorStore";
 import { useUIStore } from "@/stores/uiStore";
-import type { ExportConfig } from "@/types/project";
+import type { ExportConfig, Project, Clip, Track } from "@/types/project";
 
 /* ------------------------------------------------------------------ */
 /* Option data                                                          */
@@ -154,6 +155,81 @@ function OptionButton({
 }
 
 /* ------------------------------------------------------------------ */
+/* Project → Rust ProjectData converter                                 */
+/* ------------------------------------------------------------------ */
+
+interface RustClipData {
+  id: string;
+  asset_id: string;
+  track_position: number;
+  source_start: number;
+  source_end: number;
+  volume: number;
+  effects: { effect_type: string; start_time: number; duration: number; params: Record<string, unknown> }[];
+  overlays: { overlay_type: string; x: number; y: number; width: number; height: number; content: string; start_time: number; duration: number }[];
+}
+
+interface RustTrackData {
+  id: string;
+  track_type: string;
+  clips: RustClipData[];
+  muted: boolean;
+  locked: boolean;
+}
+
+interface RustProjectData {
+  id: string;
+  name: string;
+  resolution: [number, number];
+  frame_rate: number;
+  tracks: RustTrackData[];
+  assets: string[];
+}
+
+function convertProjectToRust(project: Project): RustProjectData {
+  const assetPathMap = new Map(project.assets.map((a) => [a.id, a.path]));
+  const convertClip = (clip: Clip): RustClipData => ({
+    id: clip.id,
+    asset_id: assetPathMap.get(clip.assetId) ?? clip.assetId,
+    track_position: Math.round(clip.trackPosition * 1000),
+    source_start: Math.round(clip.sourceStart * 1000),
+    source_end: Math.round(clip.sourceEnd * 1000),
+    volume: clip.volume,
+    effects: clip.effects.map((e) => ({
+      effect_type: e.type,
+      start_time: Math.round(e.startTime * 1000),
+      duration: Math.round(e.duration * 1000),
+      params: e.params,
+    })),
+    overlays: clip.overlays.map((o) => ({
+      overlay_type: o.type,
+      x: o.position.x,
+      y: o.position.y,
+      width: o.size.width,
+      height: o.size.height,
+      content: o.content,
+      start_time: Math.round(o.startTime * 1000),
+      duration: Math.round(o.duration * 1000),
+    })),
+  });
+  const convertTrack = (track: Track): RustTrackData => ({
+    id: track.id,
+    track_type: track.type,
+    clips: track.clips.map(convertClip),
+    muted: track.muted,
+    locked: track.locked,
+  });
+  return {
+    id: project.id,
+    name: project.name,
+    resolution: [project.resolution.width, project.resolution.height],
+    frame_rate: project.frameRate,
+    tracks: project.tracks.map(convertTrack),
+    assets: project.assets.map((a) => a.path),
+  };
+}
+
+/* ------------------------------------------------------------------ */
 /* Export Dialog component                                              */
 /* ------------------------------------------------------------------ */
 
@@ -191,23 +267,32 @@ export default function ExportDialog() {
 
   /* Export action */
   const handleExport = useCallback(async () => {
+    if (!project) return;
     const finalWidth = isCustomRes ? parseInt(customWidth) || 1920 : width;
     const finalHeight = isCustomRes ? parseInt(customHeight) || 1080 : height;
     const finalCrf = isCustomQuality ? parseInt(customCrf) || 23 : crf;
-
-    const config: ExportConfig = {
-      projectId: project?.id ?? "",
-      format,
-      codec,
-      width: finalWidth,
-      height: finalHeight,
-      fps: project?.fps ?? 30,
-      crf: finalCrf,
-      audioBitrate,
-      outputPath: "",
-    };
-
+    const extensionMap: Record<string, string> = { mp4: "mp4", mov: "mov", webm: "webm" };
+    const ext = extensionMap[format] ?? "mp4";
     try {
+      const outputPath = await showSaveDialog({
+        title: "Export video",
+        defaultPath: `${project.name}_export.${ext}`,
+        filters: [
+          { name: "Video", extensions: [ext] },
+        ],
+      });
+      if (!outputPath) return;
+      const rustProject = convertProjectToRust(project);
+      const config = {
+        project: rustProject,
+        output_path: outputPath,
+        format,
+        width: finalWidth,
+        height: finalHeight,
+        crf: finalCrf,
+        audio_bitrate: audioBitrate,
+        fps: project.frameRate ?? 30,
+      };
       await invoke("start_export", { config });
       setOpen(false);
       setShowProgress(true);
