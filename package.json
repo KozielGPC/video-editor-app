@@ -2,6 +2,25 @@
   "name": "autoeditor",
   "private": true,
   "version": "0.1.0",
+  "description": "Desktop screen recorder and video editor with automatic silence removal",
+  "author": "KozielGPC",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/KozielGPC/video-editor-app.git"
+  },
+  "bugs": {
+    "url": "https://github.com/KozielGPC/video-editor-app/issues"
+  },
+  "homepage": "https://github.com/KozielGPC/video-editor-app#readme",
+  "keywords": [
+    "video-editor",
+    "screen-recorder",
+    "silence-removal",
+    "tauri",
+    "desktop-app",
+    "ffmpeg"
+  ],
   "type": "module",
   "scripts": {
     "dev": "vite",

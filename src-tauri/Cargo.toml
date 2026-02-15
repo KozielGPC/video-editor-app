@@ -1,8 +1,10 @@
 [package]
 name = "autoeditor"
 version = "0.1.0"
-description = "Desktop screen recorder and video editor"
-authors = ["you"]
+description = "Desktop screen recorder and video editor with automatic silence removal"
+authors = ["KozielGPC"]
+license = "MIT"
+repository = "https://github.com/KozielGPC/video-editor-app"
 edition = "2021"
 
 [lib]
