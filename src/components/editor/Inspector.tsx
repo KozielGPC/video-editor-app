@@ -561,6 +561,25 @@ function AddEffectButton({
     { label: "Fade Out", icon: <Sparkles size={13} className="text-purple-400" />, type: "fade_out", params: {} },
   ];
 
+  const handleSelect = (p: typeof presets[number]) => {
+    if (p.type === "zoom") {
+      // Place zoom effects on the dedicated zoom track instead of embedding on the video clip
+      const playhead = useEditorStore.getState().playheadPosition;
+      useEditorStore.getState().addZoomClip(playhead, 2, {
+        x: p.params.x,
+        y: p.params.y,
+        scale: p.params.scale,
+      });
+    } else {
+      onAdd({
+        type: p.type,
+        startTime: defaultStart,
+        duration: 1,
+        params: p.params,
+      });
+    }
+  };
+
   return (
     <DropdownMenu.Root onOpenChange={handleOpenChange}>
       <DropdownMenu.Trigger asChild>
@@ -581,14 +600,7 @@ function AddEffectButton({
               key={p.label}
               className="flex items-center gap-2 px-3 py-1.5 text-sm text-neutral-200 rounded
                 hover:bg-neutral-700 cursor-pointer outline-none data-[highlighted]:bg-neutral-700"
-              onSelect={() =>
-                onAdd({
-                  type: p.type,
-                  startTime: defaultStart,
-                  duration: 1,
-                  params: p.params,
-                })
-              }
+              onSelect={() => handleSelect(p)}
             >
               {p.icon}
               {p.label}

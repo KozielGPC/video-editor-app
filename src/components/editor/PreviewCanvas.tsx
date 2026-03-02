@@ -75,6 +75,40 @@ function getZoomTrackEffects(project: Project, playheadPos: number): Effect[] {
 }
 
 /**
+ * Interpolate x,y from keyframed positions based on elapsed time within the effect.
+ * Falls back to static x,y when no positions are available.
+ */
+function interpolatePosition(
+  positions: Array<{ t: number; x: number; y: number }>,
+  elapsed: number,
+  fallbackX: number,
+  fallbackY: number,
+): { x: number; y: number } {
+  if (!positions || positions.length === 0) return { x: fallbackX, y: fallbackY };
+  if (positions.length === 1) return { x: positions[0].x, y: positions[0].y };
+
+  // Before first keyframe
+  if (elapsed <= positions[0].t) return { x: positions[0].x, y: positions[0].y };
+  // After last keyframe
+  const last = positions[positions.length - 1];
+  if (elapsed >= last.t) return { x: last.x, y: last.y };
+
+  // Find surrounding keyframes and linearly interpolate
+  for (let i = 0; i < positions.length - 1; i++) {
+    const a = positions[i];
+    const b = positions[i + 1];
+    if (elapsed >= a.t && elapsed <= b.t) {
+      const frac = b.t > a.t ? (elapsed - a.t) / (b.t - a.t) : 0;
+      return {
+        x: a.x + (b.x - a.x) * frac,
+        y: a.y + (b.y - a.y) * frac,
+      };
+    }
+  }
+  return { x: fallbackX, y: fallbackY };
+}
+
+/**
  * Compute zoom transform with smooth easing transitions.
  *
  * Three phases: ramp-in → hold → ramp-out, using configurable easing
@@ -121,8 +155,17 @@ function computeZoomTransform(
         mix = 1;
       }
       scale = 1 + (targetScale - 1) * mix;
-      originX = (e.params.x as number) ?? 50;
-      originY = (e.params.y as number) ?? 50;
+
+      // Interpolate position from keyframes if available
+      const positions = Array.isArray(e.params.positions) ? e.params.positions as Array<{ t: number; x: number; y: number }> : undefined;
+      const pos = interpolatePosition(
+        positions ?? [],
+        elapsed,
+        (e.params.x as number) ?? 50,
+        (e.params.y as number) ?? 50,
+      );
+      originX = pos.x;
+      originY = pos.y;
       isActive = true;
       return { scale, originX, originY, isActive };
     }
@@ -163,8 +206,17 @@ function computeZoomTransform(
       }
 
       scale = 1 + (targetScale - 1) * mix;
-      originX = (e.params.x as number) ?? 50;
-      originY = (e.params.y as number) ?? 50;
+
+      // Interpolate position from keyframes if available
+      const positions = Array.isArray(e.params.positions) ? e.params.positions as Array<{ t: number; x: number; y: number }> : undefined;
+      const pos = interpolatePosition(
+        positions ?? [],
+        elapsed,
+        (e.params.x as number) ?? 50,
+        (e.params.y as number) ?? 50,
+      );
+      originX = pos.x;
+      originY = pos.y;
       isActive = true;
       break;
     }

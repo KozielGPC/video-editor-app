@@ -239,6 +239,8 @@ fn build_zoom_crop_chain(
     // Now build crop expressions using the composite scale factor.
     // For each effect, we also need the focus point (x, y) — we take the
     // active effect's focus point via nested conditionals.
+    // If an effect has `positions` (keyframed mouse path), generate piecewise
+    // linear interpolation expressions instead of a static value.
     let mut cx_expr = "0.5".to_string();
     let mut cy_expr = "0.5".to_string();
 
@@ -248,8 +250,77 @@ fn build_zoom_crop_chain(
         let zs = effect.start_time as f64 / 1000.0;
         let ze = zs + (effect.duration as f64 / 1000.0);
 
-        cx_expr = format!("if(between(t\\,{zs:.4}\\,{ze:.4})\\,{cx:.4}\\,{cx_expr})");
-        cy_expr = format!("if(between(t\\,{zs:.4}\\,{ze:.4})\\,{cy:.4}\\,{cy_expr})");
+        // Check if this effect has keyframed positions for mouse-following zoom
+        let positions: Vec<(f64, f64, f64)> = effect
+            .params
+            .get("positions")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                // Downsample to ~10Hz (every 100ms) for smooth mouse-following
+                let mut result = Vec::new();
+                let mut last_t: Option<f64> = None;
+                for item in arr {
+                    let t = item.get("t").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let px = item.get("x").and_then(|v| v.as_f64()).unwrap_or(50.0) / 100.0;
+                    let py = item.get("y").and_then(|v| v.as_f64()).unwrap_or(50.0) / 100.0;
+                    if let Some(prev) = last_t {
+                        if t - prev < 0.1 && !result.is_empty() {
+                            continue;
+                        }
+                    }
+                    result.push((t, px, py));
+                    last_t = Some(t);
+                }
+                result
+            })
+            .unwrap_or_default();
+
+        if positions.len() >= 2 {
+            // Build piecewise smoothstep interpolation for cx and cy.
+            // Uses Hermite smoothstep (3p²-2p³) instead of linear lerp
+            // for smooth acceleration/deceleration at each keyframe.
+            let mut local_cx = format!("{:.4}", positions.last().unwrap().1);
+            let mut local_cy = format!("{:.4}", positions.last().unwrap().2);
+
+            for i in (0..positions.len() - 1).rev() {
+                let (t_a, x_a, y_a) = positions[i];
+                let (t_b, x_b, y_b) = positions[i + 1];
+                let abs_a = zs + t_a;
+                let abs_b = zs + t_b;
+                let dt = t_b - t_a;
+                if dt < 0.001 {
+                    continue;
+                }
+                // p = normalized progress [0,1] within this segment
+                let p_expr = format!("(t-{abs_a:.4})/{dt:.4}");
+                // smoothstep: 3p²-2p³
+                let smooth = format!(
+                    "(3*pow({p}\\,2)-2*pow({p}\\,3))",
+                    p = p_expr,
+                );
+                // smoothed lerp: a + (b - a) * smoothstep(p)
+                let cx_lerp = format!(
+                    "({x_a:.4}+{dx:.4}*{smooth})",
+                    dx = x_b - x_a,
+                );
+                let cy_lerp = format!(
+                    "({y_a:.4}+{dy:.4}*{smooth})",
+                    dy = y_b - y_a,
+                );
+                local_cx = format!(
+                    "if(between(t\\,{abs_a:.4}\\,{abs_b:.4})\\,{cx_lerp}\\,{local_cx})"
+                );
+                local_cy = format!(
+                    "if(between(t\\,{abs_a:.4}\\,{abs_b:.4})\\,{cy_lerp}\\,{local_cy})"
+                );
+            }
+
+            cx_expr = format!("if(between(t\\,{zs:.4}\\,{ze:.4})\\,{local_cx}\\,{cx_expr})");
+            cy_expr = format!("if(between(t\\,{zs:.4}\\,{ze:.4})\\,{local_cy}\\,{cy_expr})");
+        } else {
+            cx_expr = format!("if(between(t\\,{zs:.4}\\,{ze:.4})\\,{cx:.4}\\,{cx_expr})");
+            cy_expr = format!("if(between(t\\,{zs:.4}\\,{ze:.4})\\,{cy:.4}\\,{cy_expr})");
+        }
     }
 
     // Crop width/height = iw/scale, ih/scale

@@ -329,7 +329,38 @@ export const useRecorderStore = create<RecorderState>()(
         let outputPath: string | null = null;
         let savedCameraPath: string | null = null;
         let savedSyncOffset = 0;
-        const { _cameraLayout: cameraLayout, _screenStartTime, _cameraStartTime } = get();
+        const { _screenStartTime, _cameraStartTime, selectedCameraId } = get();
+
+        // Re-read camera layout from scene store at stop time so preset
+        // changes made during recording are picked up.
+        const sceneState = useSceneStore.getState();
+        const activeScene = sceneState.scenes.find(
+          (s) => s.id === sceneState.activeSceneId,
+        );
+        const cameraSource = activeScene?.sources.find(
+          (s) =>
+            s.type === "camera" &&
+            (selectedCameraId ? String(s.sourceId) === selectedCameraId : true),
+        );
+        const camExtra = cameraSource as unknown as Record<string, unknown> | undefined;
+        const cameraLayout: CameraLayoutForMerge | null =
+          cameraSource && cameraSource.visible
+            ? {
+                x: cameraSource.x,
+                y: cameraSource.y,
+                width: cameraSource.width,
+                height: cameraSource.height,
+                shape: camExtra?.shape as string | undefined,
+                border_radius: camExtra?.borderRadius as number | undefined,
+                border_width: camExtra?.borderWidth as number | undefined,
+                border_color: camExtra?.borderColor as string | undefined,
+                shadow: camExtra?.shadow as boolean | undefined,
+                crop_x: camExtra?.cropX as number | undefined,
+                crop_y: camExtra?.cropY as number | undefined,
+                crop_width: camExtra?.cropWidth as number | undefined,
+                crop_height: camExtra?.cropHeight as number | undefined,
+              }
+            : null;
 
         try {
           // Stop FFmpeg screen recording

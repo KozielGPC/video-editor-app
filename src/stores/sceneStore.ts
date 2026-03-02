@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { devtools, persist } from "zustand/middleware";
 import { v4 as uuidv4 } from "uuid";
+import { getPresetById } from "@/lib/scenePresets";
 
 /* ── Types ─────────────────────────────────────────────────────── */
 
@@ -99,6 +100,9 @@ interface SceneState {
   toggleGrid: () => void;
   setGridSize: (size: number) => void;
   setSnapToEdges: (snap: boolean) => void;
+
+  /* Scene presets */
+  applyScenePreset: (presetId: string) => void;
 
   /* Helpers */
   getActiveScene: () => Scene | null;
@@ -431,6 +435,84 @@ export const useSceneStore = create<SceneState>()(
             }),
             false,
             "setSnapToEdges",
+          );
+        },
+
+        /* ────────── Scene Presets ────────── */
+
+        applyScenePreset: (presetId) => {
+          const state = get();
+          const activeScene = state.scenes.find(
+            (s) => s.id === state.activeSceneId,
+          );
+          if (!activeScene) return;
+
+          const preset = getPresetById(presetId);
+          if (!preset) return;
+
+          const cameraSource = activeScene.sources.find(
+            (s) => s.type === "camera",
+          );
+          const screenSource = activeScene.sources.find(
+            (s) => s.type === "screen" || s.type === "window",
+          );
+
+          set(
+            (state) => ({
+              scenes: state.scenes.map((scene) => {
+                if (scene.id !== state.activeSceneId) return scene;
+
+                return {
+                  ...scene,
+                  sources: scene.sources.map((s) => {
+                    // Camera source
+                    if (s.type === "camera" && cameraSource && s.id === cameraSource.id) {
+                      if (!preset.camera) {
+                        // "Screen Only" — hide the camera
+                        return { ...s, visible: false };
+                      }
+                      // Apply preset layout + shape to camera
+                      const cam = preset.camera;
+                      return {
+                        ...s,
+                        x: cam.x,
+                        y: cam.y,
+                        width: cam.width,
+                        height: cam.height,
+                        visible: true,
+                        // Store shape as extra props (same as existing pattern)
+                        ...({ shape: cam.shape, borderRadius: cam.borderRadius } as Partial<Source>),
+                      };
+                    }
+
+                    // Screen/window source
+                    if (
+                      (s.type === "screen" || s.type === "window") &&
+                      screenSource &&
+                      s.id === screenSource.id
+                    ) {
+                      if (preset.screenWidthPercent === 0) {
+                        // "Camera Only" — hide the screen
+                        return { ...s, visible: false };
+                      }
+                      // Restore screen visibility + optionally constrain width
+                      return {
+                        ...s,
+                        visible: true,
+                        x: 0,
+                        y: 0,
+                        width: preset.screenWidthPercent,
+                        height: 100,
+                      };
+                    }
+
+                    return s;
+                  }),
+                };
+              }),
+            }),
+            false,
+            "applyScenePreset",
           );
         },
 

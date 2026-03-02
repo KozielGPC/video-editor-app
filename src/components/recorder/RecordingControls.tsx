@@ -1,5 +1,6 @@
 import { useCallback } from "react";
-import { Square, Pause, Play, Mic, MicOff, ChevronDown, Check } from "lucide-react";
+import { Square, Pause, Play, Mic, MicOff, ChevronDown, Check, ZoomIn } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
 import * as Select from "@radix-ui/react-select";
 import { useRecorderStore } from "@/stores/recorderStore";
 import { useActiveScene } from "@/hooks/useActiveScene";
@@ -80,6 +81,40 @@ function MicSelector() {
         </Select.Content>
       </Select.Portal>
     </Select.Root>
+  );
+}
+
+/** Zoom toggle button — shown during recording. */
+function ZoomToggleButton() {
+  const zoomOverlay = useRecorderStore((s) => s.zoomOverlay);
+  const setZoomOverlay = useRecorderStore((s) => s.setZoomOverlay);
+  const isZoomed = zoomOverlay !== null;
+
+  const handleToggle = useCallback(async () => {
+    try {
+      const result = await invoke<{ x: number; y: number; scale: number } | null>("toggle_zoom", {});
+      setZoomOverlay(result);
+    } catch (err) {
+      console.warn("toggle_zoom:", err);
+    }
+  }, [setZoomOverlay]);
+
+  return (
+    <button
+      onClick={handleToggle}
+      title="Toggle Zoom (⌘⇧Z)"
+      className={`flex items-center gap-1.5 px-3 py-2 rounded-full text-xs font-medium transition-all duration-200 ${
+        isZoomed
+          ? "bg-amber-500/20 border border-amber-500/50 text-amber-300 hover:bg-amber-500/30"
+          : "bg-neutral-800 border border-neutral-700 text-neutral-400 hover:bg-neutral-700 hover:text-neutral-200"
+      }`}
+    >
+      <ZoomIn size={14} />
+      <span>{isZoomed ? "Zoomed" : "Zoom"}</span>
+      <kbd className="hidden sm:inline px-1 py-0.5 rounded bg-neutral-900/60 border border-neutral-700 text-[9px] font-mono text-neutral-500">
+        ⌘⇧Z
+      </kbd>
+    </button>
   );
 }
 
@@ -225,6 +260,8 @@ export default function RecordingControls() {
           )}
         </button>
       )}
+
+      {isRecording && <ZoomToggleButton />}
 
       {isIdle && (
         <div className="flex flex-col text-xs text-neutral-500 ml-4 gap-0.5">

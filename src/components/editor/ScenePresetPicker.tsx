@@ -13,9 +13,9 @@ export default function ScenePresetPicker({
   disabled,
 }: ScenePresetPickerProps) {
   return (
-    <div className="flex items-center gap-1.5 px-2 py-1.5">
+    <div className="flex items-center gap-1">
       {SCENE_PRESETS.map((preset) => (
-        <PresetThumbnail
+        <PresetButton
           key={preset.id}
           preset={preset}
           isActive={preset.id === activePresetId}
@@ -27,7 +27,7 @@ export default function ScenePresetPicker({
   );
 }
 
-function PresetThumbnail({
+function PresetButton({
   preset,
   isActive,
   onClick,
@@ -45,49 +45,46 @@ function PresetThumbnail({
     <button
       onClick={onClick}
       disabled={disabled}
-      title={preset.name}
-      className={`relative w-12 h-8 rounded border-2 transition-all flex-shrink-0 overflow-hidden ${
+      className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium transition-all whitespace-nowrap ${
         isActive
-          ? "border-blue-500 bg-neutral-800"
-          : "border-neutral-700 bg-neutral-900 hover:border-neutral-500"
+          ? "bg-blue-600/20 text-blue-400 border border-blue-500/50"
+          : "bg-neutral-800/60 text-neutral-400 border border-transparent hover:bg-neutral-800 hover:text-neutral-200"
       } ${disabled ? "opacity-40 pointer-events-none" : ""}`}
     >
-      {/* Screen area */}
-      {sw > 0 && (
-        <div
-          className="absolute bg-neutral-600 rounded-[1px]"
-          style={{
-            left: "8%",
-            top: "10%",
-            width: `${sw * 0.84}%`,
-            height: "80%",
-          }}
-        />
-      )}
-
-      {/* Camera area */}
-      {cam && (
-        <div
-          className="absolute bg-blue-500"
-          style={{
-            left: `${cam.x * 0.84 + 8}%`,
-            top: `${cam.y * 0.8 + 10}%`,
-            width: `${cam.width * 0.84}%`,
-            height: `${cam.height * 0.8}%`,
-            borderRadius:
-              cam.shape === "circle"
-                ? "50%"
-                : cam.shape === "rounded"
-                ? `${cam.borderRadius ?? 10}%`
-                : "1px",
-          }}
-        />
-      )}
-
-      {/* Label */}
-      <span className="absolute bottom-0 inset-x-0 text-center text-[6px] text-neutral-400 leading-tight truncate px-0.5">
-        {preset.name}
+      {/* Mini icon */}
+      <span className="relative w-5 h-3.5 rounded-[2px] bg-neutral-700/80 overflow-hidden shrink-0">
+        {/* Screen area */}
+        {sw > 0 && (
+          <span
+            className="absolute bg-neutral-500 rounded-[1px]"
+            style={{
+              left: "8%",
+              top: "10%",
+              width: `${sw * 0.84}%`,
+              height: "80%",
+            }}
+          />
+        )}
+        {/* Camera area */}
+        {cam && (
+          <span
+            className="absolute bg-blue-400"
+            style={{
+              left: `${cam.x * 0.84 + 8}%`,
+              top: `${cam.y * 0.8 + 10}%`,
+              width: `${cam.width * 0.84}%`,
+              height: `${cam.height * 0.8}%`,
+              borderRadius:
+                cam.shape === "circle"
+                  ? "50%"
+                  : cam.shape === "rounded"
+                  ? `${cam.borderRadius ?? 10}%`
+                  : "1px",
+            }}
+          />
+        )}
       </span>
+      {preset.name}
     </button>
   );
 }

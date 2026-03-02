@@ -156,17 +156,6 @@ impl RecordingManager {
             }
         }
 
-        // Stop mouse tracker and persist data
-        if let Some(mut tracker) = self.mouse_tracker.take() {
-            tracker.stop();
-            if let Some(ref out) = self.output_path {
-                let mouse_path = format!("{}.mouse.json", out);
-                tracker.save_to_file(&mouse_path).ok();
-                let clicks_path = format!("{}.clicks.json", out);
-                tracker.save_clicks_to_file(&clicks_path).ok();
-            }
-        }
-
         // Close any open zoom segment (user zoomed in but didn't zoom out)
         if self.is_zoomed_in {
             if let Some(last) = self.zoom_markers.last_mut() {
@@ -179,6 +168,39 @@ impl RecordingManager {
             }
             self.is_zoomed_in = false;
         }
+
+        // Stop mouse tracker, enrich zoom markers with mouse positions, then persist
+        if let Some(mut tracker) = self.mouse_tracker.take() {
+            tracker.stop();
+
+            // Enrich each zoom marker with sampled mouse positions (screen-relative %)
+            let sw = self.screen_width as f64;
+            let sh = self.screen_height as f64;
+            let ox = self.screen_origin_x;
+            let oy = self.screen_origin_y;
+            for marker in &mut self.zoom_markers {
+                if marker.end_ms <= marker.start_ms {
+                    continue;
+                }
+                let raw_positions = tracker.get_positions_in_range(marker.start_ms, marker.end_ms);
+                marker.positions = raw_positions
+                    .into_iter()
+                    .map(|p| crate::models::MousePosition {
+                        x: ((p.x - ox) / sw * 100.0).clamp(0.0, 100.0),
+                        y: ((p.y - oy) / sh * 100.0).clamp(0.0, 100.0),
+                        timestamp_ms: p.timestamp_ms,
+                    })
+                    .collect();
+            }
+
+            if let Some(ref out) = self.output_path {
+                let mouse_path = format!("{}.mouse.json", out);
+                tracker.save_to_file(&mouse_path).ok();
+                let clicks_path = format!("{}.clicks.json", out);
+                tracker.save_clicks_to_file(&clicks_path).ok();
+            }
+        }
+
         // Save zoom markers (filter out incomplete segments)
         let complete: Vec<_> = self
             .zoom_markers
@@ -233,6 +255,7 @@ impl RecordingManager {
                 x,
                 y,
                 scale,
+                positions: Vec::new(),
             };
             self.zoom_markers.push(marker.clone());
             self.is_zoomed_in = true;

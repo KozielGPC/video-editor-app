@@ -12,7 +12,7 @@ import { useUIStore } from "@/stores/uiStore";
 import { useEditorStore } from "@/stores/editorStore";
 import { useSourceActions } from "@/hooks/useSourceActions";
 import { probeMedia } from "@/lib/ffmpeg";
-import { zoomMarkersToEffects, mergeZoomEffects } from "@/lib/zoom";
+import { zoomMarkersToEffects } from "@/lib/zoom";
 import type { ZoomMarker } from "@/lib/zoom";
 import type { Effect, CameraOverlayInfo } from "@/types/project";
 import type { SceneSource } from "@/types/capture";
@@ -75,33 +75,9 @@ function PostRecordingBanner() {
       console.warn("Failed to probe recording duration, using elapsed time:", err);
     }
 
-    // Load manual zoom markers from the sidecar file
-    const manualZoomEffects = await loadZoomEffects(lastRecordingPath);
-
-    // Auto-generate zoom effects from click patterns
-    let autoZoomEffects: Effect[] = [];
-    try {
-      const autoMarkers = await invoke<ZoomMarker[]>("generate_auto_zoom", {
-        recordingPath: videoPath,
-        config: {
-          time_window_ms: 1500,
-          spatial_threshold_px: 200,
-          min_clicks: 2,
-          scale: 1.5,
-          hold_after_ms: 400,
-          ramp_in_ms: 300,
-          ramp_out_ms: 200,
-        },
-        screenWidth: 1920,
-        screenHeight: 1080,
-      });
-      autoZoomEffects = zoomMarkersToEffects(autoMarkers, "auto");
-    } catch (err) {
-      console.warn("Auto-zoom generation failed (no click data?):", err);
-    }
-
-    // Merge: manual zooms take priority over auto-zooms
-    const zoomEffects = mergeZoomEffects(manualZoomEffects, autoZoomEffects);
+    // Load manual zoom markers from the sidecar file (no auto-zoom on open;
+    // users can regenerate auto-zooms from the Inspector if desired)
+    const zoomEffects = await loadZoomEffects(lastRecordingPath);
 
     // Build camera overlay info if camera was used
     const cameraOverlay: CameraOverlayInfo | undefined =
@@ -221,16 +197,16 @@ export default function RecorderView() {
       <PostRecordingBanner />
 
       {/* Main content area */}
-      <div className="flex-1 flex gap-4 min-h-0">
-        {/* Canvas area (takes most space) */}
-        <div className="flex-1 min-w-0">
+      <div className="flex-1 flex flex-col gap-3 min-h-0">
+        {/* Canvas area */}
+        <div className="flex-1 min-h-0">
           <SceneCanvas />
         </div>
 
-        {/* Source list sidebar */}
-        <aside className="w-56 shrink-0 flex flex-col bg-neutral-900/50 rounded-xl border border-neutral-800 p-3">
+        {/* Source list panel (Streamlabs-style) */}
+        <div className="shrink-0 h-36 bg-neutral-900/60 rounded-xl border border-neutral-800 py-2">
           <SourceList onAddSourceClick={() => setPickerOpen(true)} />
-        </aside>
+        </div>
       </div>
 
       {/* Recording controls bar */}

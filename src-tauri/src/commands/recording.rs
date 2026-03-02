@@ -291,6 +291,7 @@ pub fn read_zoom_markers(recording_path: String) -> Result<Vec<ZoomMarker>, Stri
                 x: m.x,
                 y: m.y,
                 scale: m.scale,
+                positions: Vec::new(),
             })
             .collect();
         return Ok(converted);

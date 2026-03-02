@@ -11,9 +11,8 @@ function getOverlayUrl(): string {
 }
 
 function emitOverlayState(): void {
-  const { recordingState, zoomOverlay } = useRecorderStore.getState();
+  const { recordingState } = useRecorderStore.getState();
   void emitTo(OVERLAY_LABEL, "zoom-overlay-update", {
-    zoomOverlay,
     recordingState,
   });
 }
@@ -22,7 +21,6 @@ export function useOverlayWindow(): void {
   const overlayRef = useRef<WebviewWindow | null>(null);
 
   const recordingState = useRecorderStore((s) => s.recordingState);
-  const zoomOverlay = useRecorderStore((s) => s.zoomOverlay);
 
   useEffect(() => {
     const unlistenPromise = listen("overlay-ready", () => {
@@ -92,7 +90,7 @@ export function useOverlayWindow(): void {
         overlayRef.current = null;
       }
     }
-  }, [recordingState, zoomOverlay]);
+  }, [recordingState]);
 
   useEffect(() => {
     const isActive =
@@ -100,5 +98,5 @@ export function useOverlayWindow(): void {
     if (isActive && overlayRef.current) {
       emitOverlayState();
     }
-  }, [zoomOverlay, recordingState]);
+  }, [recordingState]);
 }

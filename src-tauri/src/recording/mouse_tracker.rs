@@ -179,4 +179,28 @@ impl MouseTracker {
         let data = std::fs::read_to_string(path).map_err(|e| format!("read {path}: {e}"))?;
         serde_json::from_str(&data).map_err(|e| format!("parse: {e}"))
     }
+
+    /// Return positions within a timestamp range (inclusive), downsampled to ~20 Hz (every 50ms).
+    pub fn get_positions_in_range(&self, start_ms: u64, end_ms: u64) -> Vec<MousePosition> {
+        let positions = match self.positions.lock() {
+            Ok(p) => p,
+            Err(_) => return Vec::new(),
+        };
+        let mut result = Vec::new();
+        let mut last_ts: Option<u64> = None;
+        for pos in positions.iter() {
+            if pos.timestamp_ms < start_ms || pos.timestamp_ms > end_ms {
+                continue;
+            }
+            // Downsample to ~20 Hz: keep one sample every 50ms
+            if let Some(prev) = last_ts {
+                if pos.timestamp_ms - prev < 50 {
+                    continue;
+                }
+            }
+            result.push(pos.clone());
+            last_ts = Some(pos.timestamp_ms);
+        }
+        result
+    }
 }

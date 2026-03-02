@@ -72,11 +72,18 @@ export interface Clip {
   overlays: Overlay[];
 }
 
+/** Position keyframe for mouse-following zoom. */
+export interface ZoomPositionKeyframe {
+  t: number;
+  x: number;
+  y: number;
+}
+
 export interface Effect {
   type: "zoom" | "fade_in" | "fade_out";
   startTime: number;
   duration: number;
-  params: Record<string, number | string>;
+  params: Record<string, number | string | ZoomPositionKeyframe[]>;
 }
 
 export interface Overlay {

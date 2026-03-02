@@ -9,23 +9,26 @@ export interface ScenePreset {
   screenWidthPercent: number;
 }
 
+// Heights for circle presets are calculated for 16:9 aspect ratio so the
+// camera appears as a true circle: height% = width% × (16/9).
+//   width 20% → height ≈ 36%  (20 × 1.778)
 export const SCENE_PRESETS: ScenePreset[] = [
   {
     id: "classic-br",
     name: "Classic",
-    camera: { x: 75, y: 72, width: 22, height: 25, shape: "circle" },
+    camera: { x: 77, y: 61, width: 20, height: 36, shape: "circle" },
     screenWidthPercent: 100,
   },
   {
     id: "classic-bl",
     name: "Classic Left",
-    camera: { x: 3, y: 72, width: 22, height: 25, shape: "circle" },
+    camera: { x: 3, y: 61, width: 20, height: 36, shape: "circle" },
     screenWidthPercent: 100,
   },
   {
     id: "large-br",
     name: "Large Camera",
-    camera: { x: 62, y: 55, width: 35, height: 42, shape: "rounded", borderRadius: 10 },
+    camera: { x: 60, y: 50, width: 37, height: 47, shape: "rounded", borderRadius: 12 },
     screenWidthPercent: 100,
   },
   {

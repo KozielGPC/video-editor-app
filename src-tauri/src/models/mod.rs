@@ -151,6 +151,9 @@ pub struct ZoomMarker {
     pub x: f64,
     pub y: f64,
     pub scale: f64,
+    /// Sampled mouse positions (screen-relative %) during this zoom period, for mouse-following zoom.
+    #[serde(default)]
+    pub positions: Vec<MousePosition>,
 }
 
 /// A mouse click event captured during recording.

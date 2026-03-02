@@ -39,7 +39,9 @@ function StreamVideo({ stream, className, cropStyle }: { stream: MediaStream; cl
   );
 }
 
-/** Get CSS styles to preview camera crop in the overlay */
+/** Get CSS styles to preview camera crop in the overlay.
+ *  Uses oversized width/height + negative margins — matches the editor's
+ *  CameraOverlayElement technique exactly so WYSIWYG holds. */
 function getCameraCropStyle(source: Source): React.CSSProperties | undefined {
   const extra = source as unknown as Record<string, unknown>;
   const cropX = (extra.cropX as number) ?? 0;
@@ -52,15 +54,17 @@ function getCameraCropStyle(source: Source): React.CSSProperties | undefined {
     return undefined;
   }
 
-  // Use object-fit: none + object-position to simulate crop
-  // Scale up to compensate for the smaller visible area
   const scaleX = 100 / cropW;
   const scaleY = 100 / cropH;
+  const offsetX = -(cropX * 100) / cropW;
+  const offsetY = -(cropY * 100) / cropH;
+
   return {
-    objectFit: "none" as const,
-    objectPosition: `${-cropX * scaleX}% ${-cropY * scaleY}%`,
-    transform: `scale(${scaleX}, ${scaleY})`,
-    transformOrigin: "top left",
+    width: `${scaleX * 100}%`,
+    height: `${scaleY * 100}%`,
+    marginLeft: `${offsetX}%`,
+    marginTop: `${offsetY}%`,
+    objectFit: "cover" as const,
   };
 }
 
@@ -135,17 +139,14 @@ function getSourceIcon(type: Source["type"]) {
   }
 }
 
-/** Get CSS styles for camera shape (circle, rounded, rectangle) */
+/** Get CSS styles for camera shape (circle, rounded, rectangle).
+ *  Matches the editor's CameraOverlayElement rendering exactly. */
 function getCameraShapeStyle(source: Source): React.CSSProperties {
-  const style: React.CSSProperties = {
-    borderWidth: 2,
-    borderStyle: "solid",
-  };
-
   if (source.type !== "camera") {
-    style.borderRadius = "0.5rem"; // default rounded-lg
-    return style;
+    return { borderRadius: "0.5rem" };
   }
+
+  const style: React.CSSProperties = {};
 
   // Access optional camera shape properties via indexing
   const extra = source as unknown as Record<string, unknown>;
@@ -155,24 +156,18 @@ function getCameraShapeStyle(source: Source): React.CSSProperties {
   const borderColor = extra.borderColor as string | undefined;
   const shadow = extra.shadow as boolean | undefined;
 
-  if (borderWidth) {
-    style.borderWidth = borderWidth;
-  }
-  if (borderColor) {
-    style.borderColor = borderColor;
+  // Border — only when explicitly set (matches editor)
+  if (borderWidth && borderWidth > 0) {
+    style.border = `${borderWidth}px solid ${borderColor ?? "#fff"}`;
   }
 
-  switch (shape) {
-    case "circle":
-      style.borderRadius = "50%";
-      break;
-    case "rounded":
-      style.borderRadius = `${borderRadius ?? 20}%`;
-      break;
-    default:
-      style.borderRadius = "0.5rem";
-      break;
+  // Shape
+  if (shape === "circle") {
+    style.borderRadius = "50%";
+  } else if (shape === "rounded") {
+    style.borderRadius = `${borderRadius ?? 20}%`;
   }
+  // default: borderRadius stays "0" (no rounding) — matches editor
 
   if (shadow) {
     style.boxShadow = "0 4px 20px rgba(0, 0, 0, 0.5)";
@@ -502,9 +497,11 @@ function SourceOverlay({
       {/* Source content - show frame or placeholder */}
       <div
         className={`w-full h-full relative transition-colors overflow-hidden ${
-          isSelected
-            ? "border-blue-500"
-            : "border-neutral-700 hover:border-neutral-600"
+          source.type !== "camera"
+            ? isSelected
+              ? "border-2 border-blue-500"
+              : "border-2 border-neutral-700 hover:border-neutral-600"
+            : ""
         } ${source.locked ? "cursor-not-allowed" : "cursor-grab"} ${
           isDragging ? "cursor-grabbing" : ""
         }`}

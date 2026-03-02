@@ -1,5 +1,12 @@
 import type { Effect } from "@/types/project";
 
+/** Mouse position sample from Rust (screen-relative %, with absolute timestamp). */
+export interface ZoomMousePosition {
+  x: number;
+  y: number;
+  timestamp_ms: number;
+}
+
 /** Zoom marker as returned by the Rust backend (snake_case from serde). */
 export interface ZoomMarker {
   start_ms: number;
@@ -7,6 +14,8 @@ export interface ZoomMarker {
   x: number;
   y: number;
   scale: number;
+  /** Sampled mouse positions during this zoom period (screen-relative %). */
+  positions?: ZoomMousePosition[];
 }
 
 /**
@@ -16,6 +25,7 @@ export interface ZoomMarker {
  * - `startTime` in seconds
  * - `duration` in seconds
  * - `params.scale`, `params.x`, `params.y` for zoom focus
+ * - `params.positions` — keyframed mouse positions for mouse-following zoom
  * - `params.source = "auto"` to distinguish from manual zooms
  */
 export function zoomMarkersToEffects(
@@ -24,17 +34,30 @@ export function zoomMarkersToEffects(
 ): Effect[] {
   return markers
     .filter((m) => m.end_ms > m.start_ms)
-    .map((m) => ({
-      type: "zoom" as const,
-      startTime: m.start_ms / 1000,
-      duration: (m.end_ms - m.start_ms) / 1000,
-      params: {
+    .map((m) => {
+      const params: Effect["params"] = {
         scale: m.scale,
         x: m.x,
         y: m.y,
         source,
-      },
-    }));
+      };
+
+      // Include keyframed positions (time relative to effect start, in seconds)
+      if (m.positions && m.positions.length > 0) {
+        params.positions = m.positions.map((p) => ({
+          t: (p.timestamp_ms - m.start_ms) / 1000,
+          x: p.x,
+          y: p.y,
+        }));
+      }
+
+      return {
+        type: "zoom" as const,
+        startTime: m.start_ms / 1000,
+        duration: (m.end_ms - m.start_ms) / 1000,
+        params,
+      };
+    });
 }
 
 /**

@@ -80,6 +80,7 @@ pub fn generate_auto_zoom(
                 x: x_pct,
                 y: y_pct,
                 scale: config.scale,
+                positions: Vec::new(),
             }
         })
         .collect()

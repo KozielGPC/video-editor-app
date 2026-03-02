@@ -1,9 +1,6 @@
 import { useCallback, useRef, useState, useEffect, memo } from "react";
 import {
-  Grid3x3,
   Layers,
-  Monitor,
-  Camera,
   ChevronUp,
   ChevronDown,
   ChevronsUp,
@@ -20,6 +17,7 @@ import { useActiveScene } from "@/hooks/useActiveScene";
 import { useSourceActions } from "@/hooks/useSourceActions";
 import { useCaptureStream } from "@/hooks/useCaptureStream";
 import SourceOverlay from "./SourceOverlay";
+import ScenePresetPicker from "@/components/editor/ScenePresetPicker";
 
 // Aspect ratio dimensions for display
 const ASPECT_RATIOS: Record<AspectRatioPreset, { w: number; h: number } | null> = {
@@ -40,12 +38,12 @@ function SceneCanvas() {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
 
   // Get active scene data
   const { sources, selectedSource, hasActiveScene } = useActiveScene();
   const selectedSourceId = useSceneStore((state) => state.selectedSourceId);
   const canvasSettings = useSceneStore((state) => state.canvasSettings);
-  const toggleGrid = useSceneStore((state) => state.toggleGrid);
   const setAspectRatio = useSceneStore((state) => state.setAspectRatio);
 
   // Capture streaming for live preview
@@ -64,12 +62,46 @@ function SceneCanvas() {
     toggleLock,
   } = useSourceActions();
 
+  // Scene preset support
+  const applyScenePreset = useSceneStore((state) => state.applyScenePreset);
+  const hasCamera = sources.some((s) => s.type === "camera");
+
   // Sort sources by z-index for rendering
   const sortedSources = [...sources].sort((a, b) => a.zIndex - b.zIndex);
 
   // Calculate canvas dimensions based on aspect ratio
   const aspectRatio = ASPECT_RATIOS[canvasSettings.aspectRatio];
   const aspectRatioValue = aspectRatio ? aspectRatio.w / aspectRatio.h : 16 / 9;
+
+  // ── Observe container and compute exact letterboxed canvas size ──
+  // Uses the same approach as the editor's PreviewCanvas so the camera
+  // overlay proportions are identical regardless of window size.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(([entry]) => {
+      const { width, height } = entry.contentRect;
+      setContainerSize({ width, height });
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  const canvasDims = (() => {
+    if (containerSize.width === 0 || containerSize.height === 0) {
+      return { width: 0, height: 0 };
+    }
+    const cAspect = containerSize.width / containerSize.height;
+    let w: number, h: number;
+    if (aspectRatioValue > cAspect) {
+      w = containerSize.width;
+      h = w / aspectRatioValue;
+    } else {
+      h = containerSize.height;
+      w = h * aspectRatioValue;
+    }
+    return { width: Math.round(w), height: Math.round(h) };
+  })();
 
   // Deselect when clicking canvas background
   const handleCanvasClick = useCallback(
@@ -197,25 +229,16 @@ function SceneCanvas() {
 
   return (
     <div className="relative flex flex-col h-full">
-      {/* Toolbar */}
+      {/* Toolbar — scene presets (left) + aspect ratio (right) */}
       <div className="flex items-center justify-between gap-2 pb-2 mb-2 border-b border-neutral-800">
-        <div className="flex items-center gap-1">
-          {/* Grid toggle */}
-          <button
-            onClick={toggleGrid}
-            className={`flex items-center gap-1.5 px-2 py-1.5 text-xs font-medium rounded-lg border transition-colors ${
-              canvasSettings.showGrid
-                ? "bg-blue-600 border-blue-500 text-white"
-                : "bg-neutral-800 border-neutral-700 text-neutral-300 hover:bg-neutral-700"
-            }`}
-            title="Toggle Grid"
-          >
-            <Grid3x3 size={12} />
-          </button>
-        </div>
+        {hasCamera ? (
+          <ScenePresetPicker onSelect={applyScenePreset} />
+        ) : (
+          <div />
+        )}
 
         {/* Aspect ratio selector */}
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1.5 shrink-0">
           <span className="text-xs text-neutral-500">Ratio:</span>
           <select
             value={canvasSettings.aspectRatio}
@@ -235,15 +258,14 @@ function SceneCanvas() {
         ref={containerRef}
         className="relative flex-1 flex items-center justify-center bg-neutral-950 rounded-xl border border-neutral-800 overflow-hidden"
       >
-        {/* Canvas with aspect ratio */}
+        {/* Canvas — exact pixel dimensions computed via ResizeObserver,
+             matching the editor's letterboxing so overlays look identical */}
         <div
           ref={canvasRef}
           className="relative bg-neutral-900 rounded-lg shadow-2xl overflow-visible"
           style={{
-            width: "100%",
-            maxWidth: "100%",
-            aspectRatio: aspectRatioValue,
-            maxHeight: "100%",
+            width: canvasDims.width,
+            height: canvasDims.height,
           }}
           onClick={handleCanvasClick}
         >
