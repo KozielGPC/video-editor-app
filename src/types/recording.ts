@@ -15,7 +15,7 @@ export interface MicSource {
   name: string;
 }
 
-export type RecordingState = "idle" | "recording" | "paused" | "processing";
+export type RecordingState = "idle" | "recording" | "paused";
 
 export interface RecordingConfig {
   screenId: string | null;

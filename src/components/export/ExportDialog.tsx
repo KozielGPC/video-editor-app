@@ -177,6 +177,24 @@ interface RustTrackData {
   locked: boolean;
 }
 
+interface RustCameraOverlayData {
+  path: string;
+  sync_offset: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  shape?: string;
+  border_radius?: number;
+  border_width?: number;
+  border_color?: string;
+  shadow?: boolean;
+  crop_x?: number;
+  crop_y?: number;
+  crop_width?: number;
+  crop_height?: number;
+}
+
 interface RustProjectData {
   id: string;
   name: string;
@@ -184,6 +202,7 @@ interface RustProjectData {
   frame_rate: number;
   tracks: RustTrackData[];
   assets: string[];
+  camera_overlay?: RustCameraOverlayData;
 }
 
 function convertProjectToRust(project: Project): RustProjectData {
@@ -219,6 +238,27 @@ function convertProjectToRust(project: Project): RustProjectData {
     muted: track.muted,
     locked: track.locked,
   });
+  const cam = project.cameraOverlay;
+  const cameraOverlay: RustCameraOverlayData | undefined = cam
+    ? {
+        path: cam.path,
+        sync_offset: cam.syncOffset,
+        x: cam.x,
+        y: cam.y,
+        width: cam.width,
+        height: cam.height,
+        shape: cam.shape,
+        border_radius: cam.borderRadius,
+        border_width: cam.borderWidth,
+        border_color: cam.borderColor,
+        shadow: cam.shadow,
+        crop_x: cam.cropX,
+        crop_y: cam.cropY,
+        crop_width: cam.cropWidth,
+        crop_height: cam.cropHeight,
+      }
+    : undefined;
+
   return {
     id: project.id,
     name: project.name,
@@ -226,6 +266,7 @@ function convertProjectToRust(project: Project): RustProjectData {
     frame_rate: project.frameRate,
     tracks: project.tracks.map(convertTrack),
     assets: project.assets.map((a) => a.path),
+    camera_overlay: cameraOverlay,
   };
 }
 

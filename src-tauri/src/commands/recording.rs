@@ -43,6 +43,24 @@ pub struct CameraLayoutInput {
     pub y: f64,
     pub width: f64,
     pub height: f64,
+    #[serde(default)]
+    pub shape: Option<String>,
+    #[serde(default)]
+    pub border_radius: Option<f64>,
+    #[serde(default)]
+    pub border_width: Option<u32>,
+    #[serde(default)]
+    pub border_color: Option<String>,
+    #[serde(default)]
+    pub shadow: Option<bool>,
+    #[serde(default)]
+    pub crop_x: Option<f64>,
+    #[serde(default)]
+    pub crop_y: Option<f64>,
+    #[serde(default)]
+    pub crop_width: Option<f64>,
+    #[serde(default)]
+    pub crop_height: Option<f64>,
 }
 
 /// Find the FFmpeg avfoundation device index for a screen.
@@ -162,12 +180,22 @@ pub fn merge_camera_overlay(
     screen_path: String,
     camera_path: String,
     camera_layout: CameraLayoutInput,
+    sync_offset_sec: Option<f64>,
 ) -> Result<String, String> {
     let overlay = crate::recording::encoder::CameraOverlayConfig {
         x_percent: camera_layout.x,
         y_percent: camera_layout.y,
         width_percent: camera_layout.width,
         height_percent: camera_layout.height,
+        shape: camera_layout.shape,
+        border_radius: camera_layout.border_radius,
+        border_width: camera_layout.border_width,
+        border_color: camera_layout.border_color,
+        shadow: camera_layout.shadow,
+        crop_x: camera_layout.crop_x,
+        crop_y: camera_layout.crop_y,
+        crop_width: camera_layout.crop_width,
+        crop_height: camera_layout.crop_height,
     };
 
     // Merge into a temp file, then replace the original screen recording
@@ -181,16 +209,13 @@ pub fn merge_camera_overlay(
         &camera_path,
         &merged_path,
         &overlay,
+        sync_offset_sec.unwrap_or(0.0),
     )?;
 
-    // Replace original with merged, clean up temp files
-    std::fs::remove_file(&screen_path).ok();
-    std::fs::rename(&merged_path, &screen_path)
-        .map_err(|e| format!("Failed to rename merged file: {e}"))?;
-    std::fs::remove_file(&camera_path).ok();
-
-    eprintln!("[recording] Camera overlay merged into {}", screen_path);
-    Ok(screen_path)
+    // Keep originals for editor (zoom needs screen-only + camera separate).
+    // Return merged path; screen_path and camera_path remain on disk.
+    eprintln!("[recording] Camera overlay merged into {}", merged_path);
+    Ok(merged_path)
 }
 
 #[tauri::command]

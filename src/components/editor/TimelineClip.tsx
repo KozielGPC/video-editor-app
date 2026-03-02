@@ -2,6 +2,7 @@ import { useRef, useState, useEffect, useCallback, memo } from "react";
 import * as ContextMenu from "@radix-ui/react-context-menu";
 import { useEditorStore } from "@/stores/editorStore";
 import type { Clip, Track } from "@/types/project";
+import { ZOOM_ASSET_ID } from "@/types/project";
 import Waveform from "./Waveform";
 
 interface TimelineClipProps {
@@ -143,12 +144,15 @@ function TimelineClip({
 
   // ── Styles ───────────────────────────────────────────────────────────────
 
+  const isZoomClip = clip.assetId === ZOOM_ASSET_ID;
+
   const typeColors: Record<string, string> = {
     video: "bg-blue-900/60 border-blue-600/70",
     audio: "bg-green-900/60 border-green-600/70",
     overlay: "bg-purple-900/60 border-purple-600/70",
+    zoom: "bg-amber-900/60 border-amber-600/70",
   };
-  const colorCls = typeColors[track.type] ?? typeColors.video;
+  const colorCls = isZoomClip ? typeColors.zoom : (typeColors[track.type] ?? typeColors.video);
   const selectedCls = isSelected ? "ring-2 ring-blue-500 ring-offset-0" : "";
   const lockedCls = track.locked ? "opacity-50 pointer-events-none" : "";
 
@@ -172,7 +176,9 @@ function TimelineClip({
           {/* ── Content ──────────────────────────────────────────── */}
           <div className="px-2 py-0.5 h-full flex flex-col justify-between overflow-hidden pointer-events-none">
             <span className="text-[10px] font-medium text-neutral-200 truncate leading-tight">
-              {asset?.name ?? "Unknown"}
+              {isZoomClip
+                ? `Zoom ${((clip.effects[0]?.params?.scale as number) ?? 1.5).toFixed(1)}x`
+                : (asset?.name ?? "Unknown")}
             </span>
 
             {/* Audio waveform */}
@@ -214,6 +220,7 @@ function TimelineClip({
                     const end = ((effect.startTime + effect.duration) / clipDuration) * 100;
                     const w = Math.max(4, end - start);
                     const isZoom = effect.type === "zoom";
+                    const isAutoZoom = isZoom && effect.params.source === "auto";
                     return (
                       <div
                         key={i}
@@ -221,9 +228,11 @@ function TimelineClip({
                         style={{
                           left: `${start}%`,
                           width: `${w}%`,
-                          backgroundColor: isZoom
-                            ? "rgba(59, 130, 246, 0.8)"
-                            : "rgba(251, 191, 36, 0.8)",
+                          backgroundColor: isAutoZoom
+                            ? "rgba(6, 182, 212, 0.8)"   // cyan for auto-zoom
+                            : isZoom
+                            ? "rgba(59, 130, 246, 0.8)"   // blue for manual zoom
+                            : "rgba(251, 191, 36, 0.8)",  // amber for fades
                         }}
                         title={`${effect.type} ${effect.startTime.toFixed(1)}s–${(effect.startTime + effect.duration).toFixed(1)}s`}
                       />

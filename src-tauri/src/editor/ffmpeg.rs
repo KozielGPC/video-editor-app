@@ -1,4 +1,4 @@
-use crate::models::{ClipData, EffectData, MediaInfo, ProjectData};
+use crate::models::{CameraOverlayData, ClipData, EffectData, MediaInfo, ProjectData};
 use std::process::{Command, Stdio};
 
 // ---------------------------------------------------------------------------
@@ -135,11 +135,29 @@ pub struct ExportGraph {
     pub has_audio: bool,
 }
 
-/// Build a crop+scale filter chain that applies zoom effects within a clip.
+/// Generate an FFmpeg expression for an easing curve applied to `t_expr`.
+///
+/// `t_expr` should be a normalized 0-1 progress value.
+fn ffmpeg_easing_expr(t_expr: &str, easing: &str) -> String {
+    match easing {
+        "ease-in" => format!("pow({t_expr}\\,3)"),
+        "ease-out" => format!("(1-pow(1-({t_expr})\\,3))"),
+        "linear" => t_expr.to_string(),
+        // Default: ease-in-out (Hermite smoothstep: 3t²-2t³)
+        _ => format!("(3*pow({t_expr}\\,2)-2*pow({t_expr}\\,3))"),
+    }
+}
+
+/// Build a crop+scale filter chain that applies zoom effects within a clip
+/// with smooth easing transitions.
+///
+/// Each zoom effect has three phases:
+/// - **Ramp-in**: smooth transition from scale=1 to target scale
+/// - **Hold**: maintain target scale
+/// - **Ramp-out**: smooth transition back to scale=1
 ///
 /// Zoom effects use params: `scale` (zoom factor), `x` (0-100), `y` (0-100).
-/// The filter uses conditional crop expressions so the output resolution stays
-/// constant — matching CSS `transform: scale()` + `transformOrigin` behavior.
+/// Optional params: `rampIn`, `rampOut` (seconds), `easing` (string).
 fn build_zoom_crop_chain(
     effects: &[&EffectData],
     out_w: u32,
@@ -148,9 +166,7 @@ fn build_zoom_crop_chain(
     if effects.is_empty() {
         return format!("scale={out_w}:{out_h}");
     }
-    // Build nested conditional expression for crop width/height/x/y.
-    // For each zoom effect: when active, crop a (iw/s)x(ih/s) region centered at (cx, cy).
-    // When no zoom is active: crop the full frame (iw x ih at 0,0).
+
     let param_f64 = |params: &std::collections::HashMap<String, serde_json::Value>,
                       key: &str,
                       default: f64| {
@@ -159,29 +175,170 @@ fn build_zoom_crop_chain(
             .and_then(|v| v.as_f64())
             .unwrap_or(default)
     };
+
+    let param_str = |params: &std::collections::HashMap<String, serde_json::Value>,
+                      key: &str,
+                      default: &str| -> String {
+        params
+            .get(key)
+            .and_then(|v| v.as_str())
+            .unwrap_or(default)
+            .to_string()
+    };
+
     // Build from inside out: start with "no zoom" defaults, wrap with conditions
-    let mut w_expr = "iw".to_string();
-    let mut h_expr = "ih".to_string();
-    let mut x_expr = "0".to_string();
-    let mut y_expr = "0".to_string();
+    let mut scale_expr = "1".to_string();
+
     for effect in effects.iter().rev() {
         let s = param_f64(&effect.params, "scale", 2.0);
+        let ramp_in = param_f64(&effect.params, "rampIn", 0.3);
+        let ramp_out = param_f64(&effect.params, "rampOut", 0.3);
+        let easing = param_str(&effect.params, "easing", "ease-in-out");
+
+        let zs = effect.start_time as f64 / 1000.0;
+        let total_dur = effect.duration as f64 / 1000.0;
+        let ze = zs + total_dur;
+
+        // Clamp ramp durations to not exceed total duration
+        let ramp_in_clamped = ramp_in.min(total_dur / 2.0);
+        let ramp_out_clamped = ramp_out.min(total_dur / 2.0);
+
+        let ramp_in_end = zs + ramp_in_clamped;
+        let ramp_out_start = ze - ramp_out_clamped;
+
+        // Build three-phase scale factor expression:
+        // if in ramp-in: 1 + (target-1) * easing(progress)
+        // if in hold: target
+        // if in ramp-out: 1 + (target-1) * (1 - easing(progress))
+        // else: previous scale expression (no zoom)
+
+        let scale_delta = s - 1.0;
+
+        // Ramp-in progress: (t - zs) / ramp_in_duration
+        let ramp_in_progress = format!("(t-{zs:.4})/{ramp_in_clamped:.4}");
+        let ramp_in_eased = ffmpeg_easing_expr(&ramp_in_progress, &easing);
+        let ramp_in_scale = format!("(1+{scale_delta:.4}*{ramp_in_eased})");
+
+        // Ramp-out progress: (t - ramp_out_start) / ramp_out_duration
+        let ramp_out_progress = format!("(t-{ramp_out_start:.4})/{ramp_out_clamped:.4}");
+        let ramp_out_eased = ffmpeg_easing_expr(&ramp_out_progress, &easing);
+        let ramp_out_scale = format!("(1+{scale_delta:.4}*(1-{ramp_out_eased}))");
+
+        // Nested conditional: ramp-in → hold → ramp-out → previous
+        // if(between(t, zs, ramp_in_end), ramp_in_scale,
+        //   if(between(t, ramp_in_end, ramp_out_start), target_scale,
+        //     if(between(t, ramp_out_start, ze), ramp_out_scale, prev)))
+        scale_expr = format!(
+            "if(between(t\\,{zs:.4}\\,{ramp_in_end:.4})\\,{ramp_in_scale}\\,\
+             if(between(t\\,{ramp_in_end:.4}\\,{ramp_out_start:.4})\\,{s:.4}\\,\
+             if(between(t\\,{ramp_out_start:.4}\\,{ze:.4})\\,{ramp_out_scale}\\,\
+             {scale_expr})))"
+        );
+    }
+
+    // Now build crop expressions using the composite scale factor.
+    // For each effect, we also need the focus point (x, y) — we take the
+    // active effect's focus point via nested conditionals.
+    let mut cx_expr = "0.5".to_string();
+    let mut cy_expr = "0.5".to_string();
+
+    for effect in effects.iter().rev() {
         let cx = param_f64(&effect.params, "x", 50.0) / 100.0;
         let cy = param_f64(&effect.params, "y", 50.0) / 100.0;
         let zs = effect.start_time as f64 / 1000.0;
         let ze = zs + (effect.duration as f64 / 1000.0);
-        w_expr = format!("if(between(t\\,{zs:.3}\\,{ze:.3})\\,iw/{s}\\,{w_expr})");
-        h_expr = format!("if(between(t\\,{zs:.3}\\,{ze:.3})\\,ih/{s}\\,{h_expr})");
-        x_expr = format!(
-            "if(between(t\\,{zs:.3}\\,{ze:.3})\\,(iw-iw/{s})*{cx}\\,{x_expr})"
-        );
-        y_expr = format!(
-            "if(between(t\\,{zs:.3}\\,{ze:.3})\\,(ih-ih/{s})*{cy}\\,{y_expr})"
-        );
+
+        cx_expr = format!("if(between(t\\,{zs:.4}\\,{ze:.4})\\,{cx:.4}\\,{cx_expr})");
+        cy_expr = format!("if(between(t\\,{zs:.4}\\,{ze:.4})\\,{cy:.4}\\,{cy_expr})");
     }
+
+    // Crop width/height = iw/scale, ih/scale
+    // Crop x = (iw - iw/scale) * cx
+    // Crop y = (ih - ih/scale) * cy
+    let sf = &scale_expr;
+    let w_expr = format!("iw/({sf})");
+    let h_expr = format!("ih/({sf})");
+    let x_expr = format!("(iw-iw/({sf}))*({cx_expr})");
+    let y_expr = format!("(ih-ih/({sf}))*({cy_expr})");
+
     format!(
         "crop=w='{w_expr}':h='{h_expr}':x='{x_expr}':y='{y_expr}',scale={out_w}:{out_h}"
     )
+}
+
+/// Build a camera overlay filter chain for the export pipeline.
+///
+/// Applies crop, scale, and shape masking (circle / rounded / rectangle)
+/// to the camera input. Returns the filter string for a pre-shaped camera
+/// stream that can then be trimmed per-segment.
+fn build_camera_shape_filter(
+    cam_input_idx: usize,
+    cam: &CameraOverlayData,
+    proj_w: u32,
+    proj_h: u32,
+    out_label: &str,
+) -> String {
+    let cam_w = ((cam.width / 100.0 * proj_w as f64) as i32 / 2 * 2).max(2);
+    let cam_h = ((cam.height / 100.0 * proj_h as f64) as i32 / 2 * 2).max(2);
+
+    // Camera input crop (percentage-based, applied before scaling)
+    let crop_x_pct = cam.crop_x.unwrap_or(0.0) / 100.0;
+    let crop_y_pct = cam.crop_y.unwrap_or(0.0) / 100.0;
+    let crop_w_pct = cam.crop_width.unwrap_or(100.0) / 100.0;
+    let crop_h_pct = cam.crop_height.unwrap_or(100.0) / 100.0;
+
+    let input_crop = if (crop_x_pct).abs() < 0.001
+        && (crop_y_pct).abs() < 0.001
+        && (crop_w_pct - 1.0).abs() < 0.001
+        && (crop_h_pct - 1.0).abs() < 0.001
+    {
+        String::new()
+    } else {
+        format!(
+            "crop=iw*{crop_w_pct:.4}:ih*{crop_h_pct:.4}:iw*{crop_x_pct:.4}:ih*{crop_y_pct:.4},"
+        )
+    };
+
+    let shape = cam.shape.as_deref().unwrap_or("rectangle");
+
+    match shape {
+        "circle" => {
+            format!(
+                "[{cam_input_idx}:v]{input_crop}scale={cam_w}:{cam_h}:force_original_aspect_ratio=increase,crop={cam_w}:{cam_h},\
+                 format=rgba,\
+                 geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':\
+                 a='if(lte(pow(X-W/2,2)+pow(Y-H/2,2),pow(min(W,H)/2,2)),255,0)'[{out_label}]"
+            )
+        }
+        "rounded" => {
+            let border_radius = cam.border_radius.unwrap_or(20.0).clamp(0.0, 50.0);
+            let radius_px_w = (border_radius / 100.0 * cam_w as f64) as i32;
+            let radius_px_h = (border_radius / 100.0 * cam_h as f64) as i32;
+            let r = radius_px_w.min(radius_px_h).max(1);
+            let rounded_alpha = format!(
+                "if(gt(X,W-{r})*gt(Y,H-{r}),\
+                 if(lte(pow(X-(W-{r}),2)+pow(Y-(H-{r}),2),pow({r},2)),255,0),\
+                 if(lt(X,{r})*gt(Y,H-{r}),\
+                 if(lte(pow(X-{r},2)+pow(Y-(H-{r}),2),pow({r},2)),255,0),\
+                 if(gt(X,W-{r})*lt(Y,{r}),\
+                 if(lte(pow(X-(W-{r}),2)+pow(Y-{r},2),pow({r},2)),255,0),\
+                 if(lt(X,{r})*lt(Y,{r}),\
+                 if(lte(pow(X-{r},2)+pow(Y-{r},2),pow({r},2)),255,0),\
+                 255))))"
+            );
+            format!(
+                "[{cam_input_idx}:v]{input_crop}scale={cam_w}:{cam_h}:force_original_aspect_ratio=increase,crop={cam_w}:{cam_h},\
+                 format=rgba,\
+                 geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':a='{rounded_alpha}'[{out_label}]"
+            )
+        }
+        _ => {
+            // Rectangle: simple crop + scale
+            format!(
+                "[{cam_input_idx}:v]{input_crop}scale={cam_w}:{cam_h}:force_original_aspect_ratio=increase,crop={cam_w}:{cam_h}[{out_label}]"
+            )
+        }
+    }
 }
 
 pub fn build_export_filter_complex(project: &ProjectData) -> ExportGraph {
@@ -194,9 +351,45 @@ pub fn build_export_filter_complex(project: &ProjectData) -> ExportGraph {
 
     let (proj_w, proj_h) = project.resolution;
 
+    // Collect zoom clips from zoom tracks (absolute timeline positions)
+    let mut zoom_track_clips: Vec<&ClipData> = Vec::new();
+    for track in &project.tracks {
+        if track.muted || track.locked {
+            continue;
+        }
+        if track.track_type == "zoom" {
+            for clip in &track.clips {
+                if clip.asset_id == "__zoom__" {
+                    zoom_track_clips.push(clip);
+                }
+            }
+        }
+    }
+
+    eprintln!(
+        "[export] Found {} zoom track clips across {} zoom tracks",
+        zoom_track_clips.len(),
+        project.tracks.iter().filter(|t| t.track_type == "zoom").count(),
+    );
+    for (i, zc) in zoom_track_clips.iter().enumerate() {
+        let zc_dur = zc.source_end - zc.source_start;
+        eprintln!(
+            "[export]   zoom clip {i}: trackPos={}ms, dur={}ms, effects={}, asset_id='{}'",
+            zc.track_position, zc_dur, zc.effects.len(), zc.asset_id,
+        );
+    }
+
+    // If camera overlay exists, add camera file as an additional FFmpeg input
+    let cam_overlay = project.camera_overlay.as_ref();
+    let cam_input_idx = if let Some(cam) = cam_overlay {
+        let idx = input_paths.len();
+        input_paths.push(cam.path.clone());
+        Some(idx)
+    } else {
+        None
+    };
+
     // Collect clips from VIDEO tracks only.
-    // Audio tracks duplicate the same segments (especially after silence removal)
-    // and each video clip already carries audio via [input:a].
     let mut all_clips: Vec<&ClipData> = Vec::new();
     for track in &project.tracks {
         if track.muted || track.locked {
@@ -211,7 +404,37 @@ pub fn build_export_filter_complex(project: &ProjectData) -> ExportGraph {
     }
     all_clips.sort_by_key(|c| c.track_position);
 
-    for clip in &all_clips {
+    // Pre-process camera: apply shape + crop + scale once, then split for each segment
+    let num_clips = all_clips.len();
+    if let (Some(cam_idx), Some(cam)) = (cam_input_idx, cam_overlay) {
+        if num_clips > 0 {
+            // Shape the camera input once
+            let shaped_label = "cam_shaped";
+            let shape_filter = build_camera_shape_filter(cam_idx, cam, proj_w, proj_h, shaped_label);
+            filter_parts.push(shape_filter);
+
+            // Split into N copies, one for each video segment
+            if num_clips > 1 {
+                let split_outputs: String = (0..num_clips)
+                    .map(|i| format!("[cam_s{i}]"))
+                    .collect();
+                filter_parts.push(format!(
+                    "[{shaped_label}]split={num_clips}{split_outputs}"
+                ));
+            }
+        }
+    }
+
+    // Camera overlay pixel position (same for all segments)
+    let cam_x = cam_overlay
+        .map(|c| (c.x / 100.0 * proj_w as f64) as i32)
+        .unwrap_or(0);
+    let cam_y = cam_overlay
+        .map(|c| (c.y / 100.0 * proj_h as f64) as i32)
+        .unwrap_or(0);
+    let cam_sync_offset = cam_overlay.map(|c| c.sync_offset).unwrap_or(0.0);
+
+    for (clip_idx, clip) in all_clips.iter().enumerate() {
         // Register asset as FFmpeg input (deduplicate)
         let input_idx = *asset_to_input.entry(clip.asset_id.clone()).or_insert_with(|| {
             let idx = input_paths.len();
@@ -221,31 +444,112 @@ pub fn build_export_filter_complex(project: &ProjectData) -> ExportGraph {
 
         let start_sec = clip.source_start as f64 / 1000.0;
         let end_sec = clip.source_end as f64 / 1000.0;
+        let clip_dur_ms = clip.source_end - clip.source_start;
 
-        let vl = format!("v{label_counter}");
-        let al = format!("a{label_counter}");
         label_counter += 1;
 
-        // Collect zoom effects for this clip
-        let zoom_effects: Vec<&EffectData> = clip
+        // Collect zoom effects: embedded clip effects + zoom track clips that overlap this clip
+        let mut zoom_effects: Vec<&EffectData> = clip
             .effects
             .iter()
             .filter(|e| e.effect_type == "zoom")
             .collect();
 
-        // Trim video + apply zoom effects (if any)
-        let zoom_filter = build_zoom_crop_chain(&zoom_effects, proj_w, proj_h);
-        filter_parts.push(format!(
-            "[{input_idx}:v]trim=start={start_sec:.3}:end={end_sec:.3},setpts=PTS-STARTPTS,{zoom_filter}[{vl}]"
-        ));
+        let clip_start_ms = clip.track_position;
+        let clip_end_ms = clip.track_position + clip_dur_ms;
+        let mut zoom_track_effects_owned: Vec<EffectData> = Vec::new();
+        for zc in &zoom_track_clips {
+            let zc_dur = zc.source_end - zc.source_start;
+            let zc_end = zc.track_position + zc_dur;
+            if zc.track_position < clip_end_ms && zc_end > clip_start_ms {
+                for ze in &zc.effects {
+                    if ze.effect_type != "zoom" { continue; }
+                    let abs_start = zc.track_position + ze.start_time;
+                    let abs_end = abs_start + ze.duration;
+                    let rel_start = (abs_start as i64 - clip_start_ms as i64).max(0) as u64;
+                    let rel_end = ((abs_end as i64 - clip_start_ms as i64) as u64).min(clip_dur_ms);
+                    if rel_end > rel_start {
+                        zoom_track_effects_owned.push(EffectData {
+                            effect_type: "zoom".to_string(),
+                            start_time: rel_start,
+                            duration: rel_end - rel_start,
+                            params: ze.params.clone(),
+                        });
+                    }
+                }
+            }
+        }
+        let zoom_track_refs: Vec<&EffectData> = zoom_track_effects_owned.iter().collect();
+        zoom_effects.extend(zoom_track_refs);
 
-        // Trim audio
+        if !zoom_effects.is_empty() {
+            eprintln!(
+                "[export] Clip {label_counter} (trackPos={}ms, src={}..{}ms): applying {} zoom effect(s)",
+                clip.track_position, clip.source_start, clip.source_end, zoom_effects.len(),
+            );
+            for ze in &zoom_effects {
+                let scale = ze.params.get("scale").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                eprintln!(
+                    "[export]   zoom: start={}ms, dur={}ms, scale={:.2}",
+                    ze.start_time, ze.duration, scale,
+                );
+            }
+        }
+
+        let zoom_filter = build_zoom_crop_chain(&zoom_effects, proj_w, proj_h);
+
+        let al = format!("a{label_counter}");
+
+        if cam_input_idx.is_some() && cam_overlay.is_some() {
+            // Camera overlay mode: zoom screen only, overlay camera on top
+            let sv_label = format!("sv{label_counter}");
+            let cv_label = format!("cv{label_counter}");
+            let vl = format!("v{label_counter}");
+
+            // Trim screen video + apply zoom
+            filter_parts.push(format!(
+                "[{input_idx}:v]trim=start={start_sec:.3}:end={end_sec:.3},setpts=PTS-STARTPTS,{zoom_filter}[{sv_label}]"
+            ));
+
+            // Trim camera segment from the pre-shaped split
+            let cam_source = if num_clips > 1 {
+                format!("[cam_s{clip_idx}]")
+            } else {
+                "[cam_shaped]".to_string()
+            };
+            let cam_start = (start_sec + cam_sync_offset).max(0.0);
+            let cam_end = end_sec + cam_sync_offset;
+            filter_parts.push(format!(
+                "{cam_source}trim=start={cam_start:.3}:end={cam_end:.3},setpts=PTS-STARTPTS[{cv_label}]"
+            ));
+
+            // Overlay camera on zoomed screen
+            filter_parts.push(format!(
+                "[{sv_label}][{cv_label}]overlay={cam_x}:{cam_y}:shortest=1[{vl}]"
+            ));
+
+            concat_video_labels.push(format!("[{vl}]"));
+        } else {
+            // No camera overlay — standard pipeline
+            let vl = format!("v{label_counter}");
+            filter_parts.push(format!(
+                "[{input_idx}:v]trim=start={start_sec:.3}:end={end_sec:.3},setpts=PTS-STARTPTS,{zoom_filter}[{vl}]"
+            ));
+            concat_video_labels.push(format!("[{vl}]"));
+        }
+
+        // Trim audio + clean (same regardless of camera overlay)
+        // Audio filter chain:
+        // - highpass=f=80 → remove low-frequency rumble
+        // - lowpass=f=14000 → remove high-frequency hiss
+        // - afftdn=nf=-20 → FFT-based noise reduction
+        // This cleans audio for all exports, including recordings made before
+        // the recording-side audio filter was added.
         filter_parts.push(format!(
-            "[{input_idx}:a]atrim=start={start_sec:.3}:end={end_sec:.3},asetpts=PTS-STARTPTS,volume={vol}[{al}]",
+            "[{input_idx}:a]atrim=start={start_sec:.3}:end={end_sec:.3},asetpts=PTS-STARTPTS,\
+             highpass=f=80,lowpass=f=14000,afftdn=nf=-20,volume={vol}[{al}]",
             vol = clip.volume,
         ));
-
-        concat_video_labels.push(format!("[{vl}]"));
         concat_audio_labels.push(format!("[{al}]"));
     }
 

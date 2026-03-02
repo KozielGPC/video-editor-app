@@ -142,7 +142,6 @@ pub fn run() {
             commands::recording::get_recording_state,
             commands::recording::toggle_zoom,
             commands::recording::read_zoom_markers,
-            commands::recording::merge_camera_overlay,
             // Media
             commands::media::probe_media,
             commands::media::generate_thumbnails,
@@ -153,6 +152,7 @@ pub fn run() {
             commands::editor::load_project,
             commands::editor::detect_silence,
             commands::editor::remove_silence,
+            commands::editor::generate_auto_zoom,
             // Export
             commands::export::start_export,
             commands::export::cancel_export,

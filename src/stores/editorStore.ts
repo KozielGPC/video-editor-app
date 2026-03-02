@@ -1,7 +1,9 @@
 import { create } from "zustand";
 import { v4 as uuidv4 } from "uuid";
-import type { Project, Track, Clip, Effect, Overlay, Asset } from "@/types/project";
+import type { Project, Track, Clip, Effect, Overlay, Asset, CameraOverlayInfo } from "@/types/project";
+import { ZOOM_ASSET_ID } from "@/types/project";
 import type { Segment } from "@/lib/ffmpeg";
+import { getPresetById } from "@/lib/scenePresets";
 
 // ─── Public Types ────────────────────────────────────────────────────────────
 
@@ -33,6 +35,7 @@ interface EditorState {
     filePath: string,
     durationSec?: number,
     zoomEffects?: Effect[],
+    cameraOverlay?: CameraOverlayInfo,
   ) => void;
 
   /* tracks */
@@ -60,6 +63,7 @@ interface EditorState {
 
   /* effects & overlays */
   addEffect: (trackId: string, clipId: string, effect: Effect) => void;
+  addEffects: (trackId: string, clipId: string, effects: Effect[]) => void;
   updateEffect: (
     trackId: string,
     clipId: string,
@@ -93,6 +97,18 @@ interface EditorState {
 
   /* silence removal */
   applySilenceRemoval: (segments: Segment[]) => void;
+
+  /* zoom track */
+  addZoomClip: (
+    trackPosition: number,
+    duration: number,
+    params: { x: number; y: number; scale: number; easing?: string; rampIn?: number; rampOut?: number },
+  ) => void;
+  getZoomTrack: () => Track | null;
+  ensureZoomTrack: () => void;
+
+  /* scene presets */
+  applyScenePreset: (presetId: string) => void;
 
   /* history */
   undo: () => void;
@@ -156,7 +172,70 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   // ── Project ──────────────────────────────────────────────────────────────
 
-  setProject: (project) =>
+  setProject: (project) => {
+    if (project) {
+      // Auto-migrate: ensure zoom track exists
+      if (!project.tracks.some((t) => t.type === "zoom")) {
+        project = {
+          ...project,
+          tracks: [
+            ...project.tracks,
+            { id: uuidv4(), name: "Zoom", type: "zoom", clips: [], muted: false, locked: false },
+          ],
+        };
+      }
+
+      // Migrate embedded zoom effects from video clips to zoom track
+      const zoomTrack = project.tracks.find((t) => t.type === "zoom")!;
+      const migratedClips: Clip[] = [];
+      const updatedTracks = project.tracks.map((track) => {
+        if (track.type !== "video") return track;
+        return {
+          ...track,
+          clips: track.clips.map((clip) => {
+            const zoomEffects = clip.effects.filter((e) => e.type === "zoom");
+            if (zoomEffects.length === 0) return clip;
+
+            // Create zoom clips on the zoom track
+            for (const e of zoomEffects) {
+              migratedClips.push({
+                id: uuidv4(),
+                assetId: ZOOM_ASSET_ID,
+                trackPosition: clip.trackPosition + e.startTime,
+                sourceStart: 0,
+                sourceEnd: e.duration,
+                volume: 1,
+                effects: [{
+                  type: "zoom",
+                  startTime: 0,
+                  duration: e.duration,
+                  params: { ...e.params },
+                }],
+                overlays: [],
+              });
+            }
+
+            // Remove zoom effects from the video clip
+            return {
+              ...clip,
+              effects: clip.effects.filter((e) => e.type !== "zoom"),
+            };
+          }),
+        };
+      });
+
+      if (migratedClips.length > 0) {
+        project = {
+          ...project,
+          tracks: updatedTracks.map((t) =>
+            t.id === zoomTrack.id
+              ? { ...t, clips: [...t.clips, ...migratedClips] }
+              : t,
+          ),
+        };
+      }
+    }
+
     set({
       project,
       selectedClipId: null,
@@ -165,7 +244,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       isPlaying: false,
       _undoStack: [],
       _redoStack: [],
-    }),
+    });
+  },
 
   createNewProject: (name, width = 1920, height = 1080, fps = 30) => {
     const project: Project = {
@@ -176,6 +256,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       tracks: [
         { id: uuidv4(), type: "video", clips: [], muted: false, locked: false },
         { id: uuidv4(), type: "audio", clips: [], muted: false, locked: false },
+        { id: uuidv4(), name: "Zoom", type: "zoom", clips: [], muted: false, locked: false },
       ],
       assets: [],
     };
@@ -190,7 +271,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     });
   },
 
-  createProjectFromRecording: (filePath, durationSec = 10, zoomEffects = []) => {
+  createProjectFromRecording: (filePath, durationSec = 10, zoomEffects = [], cameraOverlay) => {
     const assetId = uuidv4();
     const fileName = filePath.split("/").pop() ?? "Recording";
     const projectName = fileName.replace(/\.[^.]+$/, "");
@@ -207,6 +288,29 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
     const videoTrackId = uuidv4();
     const audioTrackId = uuidv4();
+    const zoomTrackId = uuidv4();
+
+    // Migrate zoom effects to zoom track clips
+    const zoomClips: Clip[] = zoomEffects
+      .filter((e) => e.type === "zoom")
+      .map((e) => ({
+        id: uuidv4(),
+        assetId: ZOOM_ASSET_ID,
+        trackPosition: e.startTime,
+        sourceStart: 0,
+        sourceEnd: e.duration,
+        volume: 1,
+        effects: [{
+          type: "zoom" as const,
+          startTime: 0,
+          duration: e.duration,
+          params: { ...e.params },
+        }],
+        overlays: [],
+      }));
+
+    // Keep only non-zoom effects on the video clip
+    const nonZoomEffects = zoomEffects.filter((e) => e.type !== "zoom");
 
     const videoClip: Clip = {
       id: uuidv4(),
@@ -215,7 +319,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       sourceStart: 0,
       sourceEnd: durationSec,
       volume: 1,
-      effects: zoomEffects,
+      effects: nonZoomEffects,
       overlays: [],
     };
 
@@ -252,8 +356,17 @@ export const useEditorStore = create<EditorState>((set, get) => ({
           muted: false,
           locked: false,
         },
+        {
+          id: zoomTrackId,
+          name: "Zoom",
+          type: "zoom",
+          clips: zoomClips,
+          muted: false,
+          locked: false,
+        },
       ],
       assets: [asset],
+      cameraOverlay,
     };
 
     set({
@@ -527,6 +640,29 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     });
   },
 
+  addEffects: (trackId, clipId, effects) => {
+    const { project, _pushHistory } = get();
+    if (!project || effects.length === 0) return;
+    _pushHistory();
+    set({
+      project: {
+        ...project,
+        tracks: project.tracks.map((t) =>
+          t.id === trackId
+            ? {
+                ...t,
+                clips: t.clips.map((c) =>
+                  c.id === clipId
+                    ? { ...c, effects: [...c.effects, ...effects] }
+                    : c,
+                ),
+              }
+            : t,
+        ),
+      },
+    });
+  },
+
   updateEffect: (trackId, clipId, effectIndex, patch) => {
     const { project, _pushHistory } = get();
     if (!project) return;
@@ -636,6 +772,120 @@ export const useEditorStore = create<EditorState>((set, get) => ({
               }
             : t,
         ),
+      },
+    });
+  },
+
+  // ── Zoom Track ──────────────────────────────────────────────────────
+
+  getZoomTrack: () => {
+    const { project } = get();
+    return project?.tracks.find((t) => t.type === "zoom") ?? null;
+  },
+
+  ensureZoomTrack: () => {
+    const { project } = get();
+    if (!project) return;
+    if (project.tracks.some((t) => t.type === "zoom")) return;
+    set({
+      project: {
+        ...project,
+        tracks: [
+          ...project.tracks,
+          {
+            id: uuidv4(),
+            name: "Zoom",
+            type: "zoom" as const,
+            clips: [],
+            muted: false,
+            locked: false,
+          },
+        ],
+      },
+    });
+  },
+
+  addZoomClip: (trackPosition, duration, params) => {
+    const { project, _pushHistory, ensureZoomTrack } = get();
+    if (!project) return;
+    ensureZoomTrack();
+    _pushHistory();
+
+    const updatedProject = get().project;
+    if (!updatedProject) return;
+
+    const zoomTrack = updatedProject.tracks.find((t) => t.type === "zoom");
+    if (!zoomTrack) return;
+
+    const clip: Clip = {
+      id: uuidv4(),
+      assetId: ZOOM_ASSET_ID,
+      trackPosition,
+      sourceStart: 0,
+      sourceEnd: duration,
+      volume: 1,
+      effects: [{
+        type: "zoom",
+        startTime: 0,
+        duration,
+        params: {
+          scale: params.scale,
+          x: params.x,
+          y: params.y,
+          easing: params.easing ?? "ease-in-out",
+          rampIn: params.rampIn ?? 0.3,
+          rampOut: params.rampOut ?? 0.3,
+        },
+      }],
+      overlays: [],
+    };
+
+    set({
+      project: {
+        ...updatedProject,
+        tracks: updatedProject.tracks.map((t) =>
+          t.id === zoomTrack.id ? { ...t, clips: [...t.clips, clip] } : t,
+        ),
+      },
+    });
+  },
+
+  // ── Scene Presets ────────────────────────────────────────────────────────
+
+  applyScenePreset: (presetId) => {
+    const { project, _pushHistory } = get();
+    if (!project || !project.cameraOverlay) return;
+
+    const preset = getPresetById(presetId);
+    if (!preset) return;
+
+    _pushHistory();
+
+    if (!preset.camera) {
+      // Screen-only: hide camera overlay (keep data so picker remains)
+      set({
+        project: {
+          ...project,
+          cameraOverlay: { ...project.cameraOverlay, hidden: true },
+        },
+      });
+      return;
+    }
+
+    const cam = preset.camera;
+    set({
+      project: {
+        ...project,
+        cameraOverlay: {
+          ...project.cameraOverlay,
+          x: cam.x,
+          y: cam.y,
+          width: cam.width,
+          height: cam.height,
+          shape: cam.shape,
+          borderRadius: cam.borderRadius,
+          hidden: false,
+        },
       },
     });
   },

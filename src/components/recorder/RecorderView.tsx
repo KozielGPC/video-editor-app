@@ -11,17 +11,11 @@ import { useRecorderStore } from "@/stores/recorderStore";
 import { useUIStore } from "@/stores/uiStore";
 import { useEditorStore } from "@/stores/editorStore";
 import { useSourceActions } from "@/hooks/useSourceActions";
-import type { Effect } from "@/types/project";
+import { probeMedia } from "@/lib/ffmpeg";
+import { zoomMarkersToEffects, mergeZoomEffects } from "@/lib/zoom";
+import type { ZoomMarker } from "@/lib/zoom";
+import type { Effect, CameraOverlayInfo } from "@/types/project";
 import type { SceneSource } from "@/types/capture";
-
-/** Zoom marker as returned by the Rust backend (start_ms/end_ms = zoom in/out) */
-interface ZoomMarker {
-  start_ms: number;
-  end_ms: number;
-  x: number;
-  y: number;
-  scale: number;
-}
 
 /** Load zoom markers via Tauri command and convert to Effect[] */
 async function loadZoomEffects(recordingPath: string): Promise<Effect[]> {
@@ -29,18 +23,7 @@ async function loadZoomEffects(recordingPath: string): Promise<Effect[]> {
     const markers = await invoke<ZoomMarker[]>("read_zoom_markers", {
       recordingPath,
     });
-    return markers
-      .filter((m) => m.end_ms > m.start_ms)
-      .map((m) => ({
-        type: "zoom" as const,
-        startTime: m.start_ms / 1000,
-        duration: (m.end_ms - m.start_ms) / 1000,
-        params: {
-          scale: m.scale,
-          x: m.x,
-          y: m.y,
-        },
-      }));
+    return zoomMarkersToEffects(markers, "manual");
   } catch (err) {
     console.warn("Failed to load zoom markers:", err);
     return [];
@@ -49,6 +32,9 @@ async function loadZoomEffects(recordingPath: string): Promise<Effect[]> {
 
 function PostRecordingBanner() {
   const lastRecordingPath = useRecorderStore((s) => s.lastRecordingPath);
+  const lastCameraPath = useRecorderStore((s) => s.lastCameraPath);
+  const lastCameraLayout = useRecorderStore((s) => s.lastCameraLayout);
+  const lastSyncOffset = useRecorderStore((s) => s.lastSyncOffset);
   const lastRecordingDuration = useRecorderStore((s) => s.elapsedTime);
   const clearLastRecording = useRecorderStore((s) => s.clearLastRecording);
   const setActiveView = useUIStore((s) => s.setActiveView);
@@ -74,14 +60,79 @@ function PostRecordingBanner() {
 
   const handleOpenInEditor = useCallback(async () => {
     if (!lastRecordingPath) return;
-    const durationSec = Math.max(lastRecordingDuration, 5);
-    // Load zoom markers from the sidecar file and convert to effects
-    const zoomEffects = await loadZoomEffects(lastRecordingPath);
-    createProjectFromRecording(lastRecordingPath, durationSec, zoomEffects);
+
+    // lastRecordingPath is always screen-only (no merge step)
+    const videoPath = lastRecordingPath;
+
+    // Probe actual duration from the file (elapsed timer is inaccurate)
+    let durationSec = Math.max(lastRecordingDuration, 5);
+    try {
+      const info = await probeMedia(videoPath);
+      if (info.duration_ms > 0) {
+        durationSec = info.duration_ms / 1000;
+      }
+    } catch (err) {
+      console.warn("Failed to probe recording duration, using elapsed time:", err);
+    }
+
+    // Load manual zoom markers from the sidecar file
+    const manualZoomEffects = await loadZoomEffects(lastRecordingPath);
+
+    // Auto-generate zoom effects from click patterns
+    let autoZoomEffects: Effect[] = [];
+    try {
+      const autoMarkers = await invoke<ZoomMarker[]>("generate_auto_zoom", {
+        recordingPath: videoPath,
+        config: {
+          time_window_ms: 1500,
+          spatial_threshold_px: 200,
+          min_clicks: 2,
+          scale: 1.5,
+          hold_after_ms: 400,
+          ramp_in_ms: 300,
+          ramp_out_ms: 200,
+        },
+        screenWidth: 1920,
+        screenHeight: 1080,
+      });
+      autoZoomEffects = zoomMarkersToEffects(autoMarkers, "auto");
+    } catch (err) {
+      console.warn("Auto-zoom generation failed (no click data?):", err);
+    }
+
+    // Merge: manual zooms take priority over auto-zooms
+    const zoomEffects = mergeZoomEffects(manualZoomEffects, autoZoomEffects);
+
+    // Build camera overlay info if camera was used
+    const cameraOverlay: CameraOverlayInfo | undefined =
+      lastCameraPath && lastCameraLayout
+        ? {
+            path: lastCameraPath,
+            syncOffset: lastSyncOffset,
+            x: lastCameraLayout.x,
+            y: lastCameraLayout.y,
+            width: lastCameraLayout.width,
+            height: lastCameraLayout.height,
+            shape: lastCameraLayout.shape,
+            borderRadius: lastCameraLayout.border_radius,
+            borderWidth: lastCameraLayout.border_width,
+            borderColor: lastCameraLayout.border_color,
+            shadow: lastCameraLayout.shadow,
+            cropX: lastCameraLayout.crop_x,
+            cropY: lastCameraLayout.crop_y,
+            cropWidth: lastCameraLayout.crop_width,
+            cropHeight: lastCameraLayout.crop_height,
+          }
+        : undefined;
+
+    createProjectFromRecording(videoPath, durationSec, zoomEffects, cameraOverlay);
     setActiveView("editor");
     clearLastRecording();
   }, [
     lastRecordingPath,
+    lastCameraPath,
+    lastCameraLayout,
+    lastSyncOffset,
     lastRecordingDuration,
     createProjectFromRecording,
     setActiveView,

@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState, memo } from "react";
-import { Monitor, Camera, Image, Type, AppWindow, Eye, EyeOff, Lock, Unlock, Trash2 } from "lucide-react";
+import { Monitor, Camera, Image, Type, AppWindow, Eye, EyeOff, Lock, Unlock, Trash2, Crop } from "lucide-react";
 import type { Source } from "@/stores/sceneStore";
+import { useSceneStore } from "@/stores/sceneStore";
 
 /** Video element for rendering MediaStream (camera sources) */
-function StreamVideo({ stream, className }: { stream: MediaStream; className?: string }) {
+function StreamVideo({ stream, className, cropStyle }: { stream: MediaStream; className?: string; cropStyle?: React.CSSProperties }) {
   const videoRef = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
@@ -29,12 +30,38 @@ function StreamVideo({ stream, className }: { stream: MediaStream; className?: s
     <video
       ref={videoRef}
       className={className}
+      style={cropStyle}
       autoPlay
       playsInline
       muted
       draggable={false}
     />
   );
+}
+
+/** Get CSS styles to preview camera crop in the overlay */
+function getCameraCropStyle(source: Source): React.CSSProperties | undefined {
+  const extra = source as unknown as Record<string, unknown>;
+  const cropX = (extra.cropX as number) ?? 0;
+  const cropY = (extra.cropY as number) ?? 0;
+  const cropW = (extra.cropWidth as number) ?? 100;
+  const cropH = (extra.cropHeight as number) ?? 100;
+
+  // No crop applied — default full frame
+  if (cropX === 0 && cropY === 0 && cropW === 100 && cropH === 100) {
+    return undefined;
+  }
+
+  // Use object-fit: none + object-position to simulate crop
+  // Scale up to compensate for the smaller visible area
+  const scaleX = 100 / cropW;
+  const scaleY = 100 / cropH;
+  return {
+    objectFit: "none" as const,
+    objectPosition: `${-cropX * scaleX}% ${-cropY * scaleY}%`,
+    transform: `scale(${scaleX}, ${scaleY})`,
+    transformOrigin: "top left",
+  };
 }
 
 type ResizeHandle =
@@ -106,6 +133,52 @@ function getSourceIcon(type: Source["type"]) {
     default:
       return <Monitor size={16} />;
   }
+}
+
+/** Get CSS styles for camera shape (circle, rounded, rectangle) */
+function getCameraShapeStyle(source: Source): React.CSSProperties {
+  const style: React.CSSProperties = {
+    borderWidth: 2,
+    borderStyle: "solid",
+  };
+
+  if (source.type !== "camera") {
+    style.borderRadius = "0.5rem"; // default rounded-lg
+    return style;
+  }
+
+  // Access optional camera shape properties via indexing
+  const extra = source as unknown as Record<string, unknown>;
+  const shape = extra.shape as string | undefined;
+  const borderRadius = extra.borderRadius as number | undefined;
+  const borderWidth = extra.borderWidth as number | undefined;
+  const borderColor = extra.borderColor as string | undefined;
+  const shadow = extra.shadow as boolean | undefined;
+
+  if (borderWidth) {
+    style.borderWidth = borderWidth;
+  }
+  if (borderColor) {
+    style.borderColor = borderColor;
+  }
+
+  switch (shape) {
+    case "circle":
+      style.borderRadius = "50%";
+      break;
+    case "rounded":
+      style.borderRadius = `${borderRadius ?? 20}%`;
+      break;
+    default:
+      style.borderRadius = "0.5rem";
+      break;
+  }
+
+  if (shadow) {
+    style.boxShadow = "0 4px 20px rgba(0, 0, 0, 0.5)";
+  }
+
+  return style;
 }
 
 function SourceOverlay({
@@ -428,13 +501,14 @@ function SourceOverlay({
     >
       {/* Source content - show frame or placeholder */}
       <div
-        className={`w-full h-full relative rounded-lg border-2 transition-colors overflow-hidden ${
+        className={`w-full h-full relative transition-colors overflow-hidden ${
           isSelected
             ? "border-blue-500"
             : "border-neutral-700 hover:border-neutral-600"
         } ${source.locked ? "cursor-not-allowed" : "cursor-grab"} ${
           isDragging ? "cursor-grabbing" : ""
         }`}
+        style={getCameraShapeStyle(source)}
         onMouseDown={handleDragStart}
       >
         {/* Frame content - video stream for cameras, image for screens/windows */}
@@ -442,6 +516,7 @@ function SourceOverlay({
           <StreamVideo
             stream={stream}
             className="w-full h-full object-cover"
+            cropStyle={source.type === "camera" ? getCameraCropStyle(source) : undefined}
           />
         ) : frame ? (
           <img
@@ -572,6 +647,11 @@ function SourceOverlay({
           </div>
         </div>
       )}
+
+      {/* Camera crop controls — shown below selected camera sources */}
+      {isSelected && source.type === "camera" && (
+        <CameraCropControls source={source} />
+      )}
     </div>
   );
 }
@@ -623,6 +703,73 @@ function ResizeHandleComponent({ handle, isActive, onMouseDown }: ResizeHandlePr
       }}
       onMouseDown={onMouseDown}
     />
+  );
+}
+
+// ── Camera Crop Controls ──────────────────────────────────────────────────────
+
+function CameraCropControls({ source }: { source: Source }) {
+  const { activeSceneId } = useSceneStore();
+  const updateSource = useSceneStore((s) => s.updateSource);
+
+  const extra = source as unknown as Record<string, unknown>;
+  const cropX = (extra.cropX as number) ?? 0;
+  const cropY = (extra.cropY as number) ?? 0;
+  const cropWidth = (extra.cropWidth as number) ?? 100;
+  const cropHeight = (extra.cropHeight as number) ?? 100;
+
+  const handleChange = (key: string, value: number) => {
+    if (!activeSceneId) return;
+    updateSource(activeSceneId, source.id, { [key]: value } as Partial<Source>);
+  };
+
+  return (
+    <div
+      className="absolute left-0 right-0 bg-neutral-900/95 border border-neutral-700 rounded-b p-2 space-y-1.5 z-50"
+      style={{ top: "100%" }}
+      onClick={(e) => e.stopPropagation()}
+      onMouseDown={(e) => e.stopPropagation()}
+    >
+      <div className="flex items-center gap-1 text-[10px] text-neutral-400 font-medium uppercase tracking-wider">
+        <Crop size={10} /> Camera Crop
+      </div>
+      <CropSlider label="X" value={cropX} min={0} max={50} onChange={(v) => handleChange("cropX", v)} />
+      <CropSlider label="Y" value={cropY} min={0} max={50} onChange={(v) => handleChange("cropY", v)} />
+      <CropSlider label="W" value={cropWidth} min={20} max={100} onChange={(v) => handleChange("cropWidth", v)} />
+      <CropSlider label="H" value={cropHeight} min={20} max={100} onChange={(v) => handleChange("cropHeight", v)} />
+    </div>
+  );
+}
+
+function CropSlider({
+  label,
+  value,
+  min,
+  max,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className="text-[10px] text-neutral-500 w-3 shrink-0">{label}</span>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={1}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="flex-1 h-1 accent-blue-500"
+      />
+      <span className="text-[10px] text-neutral-300 w-8 text-right tabular-nums font-mono">
+        {Math.round(value)}%
+      </span>
+    </div>
   );
 }
 

@@ -107,7 +107,7 @@ export default function RecordingControls() {
   const isIdle = recordingState === "idle";
   const isRecording = recordingState === "recording";
   const isPaused = recordingState === "paused";
-  const isProcessing = recordingState === "processing";
+  const isProcessing = false; // merge step removed — recording goes idle immediately
 
   const handleStart = useCallback(async () => {
     if (!hasRecordableSources) return;

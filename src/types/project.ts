@@ -1,5 +1,26 @@
 // ─── Core Project Types ──────────────────────────────────────────────────────
 
+/** Camera overlay info for separate zoom-aware rendering */
+export interface CameraOverlayInfo {
+  path: string;
+  syncOffset: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  shape?: string;
+  borderRadius?: number;
+  borderWidth?: number;
+  borderColor?: string;
+  shadow?: boolean;
+  cropX?: number;
+  cropY?: number;
+  cropWidth?: number;
+  cropHeight?: number;
+  /** When true the camera overlay is hidden in preview/export (but data is preserved) */
+  hidden?: boolean;
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -13,6 +34,8 @@ export interface Project {
   fps?: number;
   tracks: Track[];
   assets: Asset[];
+  /** Camera overlay for zoom-aware rendering (zoom only affects screen, not camera) */
+  cameraOverlay?: CameraOverlayInfo;
 }
 
 export interface Asset {
@@ -29,11 +52,14 @@ export interface Asset {
 export interface Track {
   id: string;
   name?: string;
-  type: "video" | "audio" | "overlay";
+  type: "video" | "audio" | "overlay" | "zoom";
   clips: Clip[];
   muted: boolean;
   locked: boolean;
 }
+
+/** Sentinel asset ID used for zoom clips on the zoom track */
+export const ZOOM_ASSET_ID = "__zoom__";
 
 export interface Clip {
   id: string;
@@ -50,7 +76,7 @@ export interface Effect {
   type: "zoom" | "fade_in" | "fade_out";
   startTime: number;
   duration: number;
-  params: Record<string, number>;
+  params: Record<string, number | string>;
 }
 
 export interface Overlay {

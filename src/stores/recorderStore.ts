@@ -46,7 +46,7 @@ function startCameraMediaRecording(stream: MediaStream): void {
   try {
     cameraRecorder = new MediaRecorder(stream, {
       mimeType,
-      videoBitsPerSecond: 5_000_000,
+      videoBitsPerSecond: 8_000_000,
     });
   } catch {
     // Fallback without explicit options
@@ -93,6 +93,15 @@ interface CameraLayoutForMerge {
   y: number;
   width: number;
   height: number;
+  shape?: string;
+  border_radius?: number;
+  border_width?: number;
+  border_color?: string;
+  shadow?: boolean;
+  crop_x?: number;
+  crop_y?: number;
+  crop_width?: number;
+  crop_height?: number;
 }
 
 interface RecorderState {
@@ -118,6 +127,14 @@ interface RecorderState {
 
   /** Path of the last completed recording (null until a recording finishes) */
   lastRecordingPath: string | null;
+  /** Path to screen-only recording (before camera merge) */
+  lastScreenOnlyPath: string | null;
+  /** Path to camera-only recording */
+  lastCameraPath: string | null;
+  /** Camera layout used during recording */
+  lastCameraLayout: CameraLayoutForMerge | null;
+  /** Sync offset between screen and camera start (seconds) */
+  lastSyncOffset: number;
   /** Dismiss the post-recording banner */
   clearLastRecording: () => void;
 
@@ -129,6 +146,9 @@ interface RecorderState {
 
   /** Camera layout stored for post-recording merge */
   _cameraLayout: CameraLayoutForMerge | null;
+  /** Timestamps for camera sync */
+  _screenStartTime: number | null;
+  _cameraStartTime: number | null;
 
   startRecording: () => Promise<void>;
   pauseRecording: () => Promise<void>;
@@ -179,10 +199,16 @@ export const useRecorderStore = create<RecorderState>()(
       recordingState: "idle",
       elapsedTime: 0,
       lastRecordingPath: null,
+      lastScreenOnlyPath: null,
+      lastCameraPath: null,
+      lastCameraLayout: null,
+      lastSyncOffset: 0,
       zoomOverlay: null,
       _cameraLayout: null,
+      _screenStartTime: null,
+      _cameraStartTime: null,
       clearLastRecording: () =>
-        set({ lastRecordingPath: null }, false, "clearLastRecording"),
+        set({ lastRecordingPath: null, lastScreenOnlyPath: null, lastCameraPath: null, lastCameraLayout: null, lastSyncOffset: 0 }, false, "clearLastRecording"),
       setZoomOverlay: (zoomOverlay) =>
         set({ zoomOverlay }, false, "setZoomOverlay"),
 
@@ -203,16 +229,30 @@ export const useRecorderStore = create<RecorderState>()(
             String(s.sourceId) === selectedCameraId,
         );
 
+        // Access optional camera shape properties
+        const camExtra = cameraSource as unknown as Record<string, unknown> | undefined;
         const cameraLayout: CameraLayoutForMerge | null = cameraSource
           ? {
               x: cameraSource.x,
               y: cameraSource.y,
               width: cameraSource.width,
               height: cameraSource.height,
+              shape: camExtra?.shape as string | undefined,
+              border_radius: camExtra?.borderRadius as number | undefined,
+              border_width: camExtra?.borderWidth as number | undefined,
+              border_color: camExtra?.borderColor as string | undefined,
+              shadow: camExtra?.shadow as boolean | undefined,
+              crop_x: camExtra?.cropX as number | undefined,
+              crop_y: camExtra?.cropY as number | undefined,
+              crop_width: camExtra?.cropWidth as number | undefined,
+              crop_height: camExtra?.cropHeight as number | undefined,
             }
           : null;
 
         try {
+          // Track screen start time for sync
+          const screenStartTime = Date.now();
+
           // Start screen + mic recording via FFmpeg (no camera)
           await invoke("start_recording", {
             screenId: selectedScreenId,
@@ -221,9 +261,11 @@ export const useRecorderStore = create<RecorderState>()(
 
           // Start camera recording via browser MediaRecorder
           // Camera preview stays active - no release needed!
+          let cameraStartTime: number | null = null;
           if (selectedCameraId) {
             const stream = getActiveCameraStream();
             if (stream) {
+              cameraStartTime = Date.now();
               startCameraMediaRecording(stream);
             }
           }
@@ -235,6 +277,8 @@ export const useRecorderStore = create<RecorderState>()(
               lastRecordingPath: null,
               zoomOverlay: null,
               _cameraLayout: cameraLayout,
+              _screenStartTime: screenStartTime,
+              _cameraStartTime: cameraStartTime,
             },
             false,
             "startRecording",
@@ -283,7 +327,9 @@ export const useRecorderStore = create<RecorderState>()(
 
       stopRecording: async () => {
         let outputPath: string | null = null;
-        const cameraLayout = get()._cameraLayout;
+        let savedCameraPath: string | null = null;
+        let savedSyncOffset = 0;
+        const { _cameraLayout: cameraLayout, _screenStartTime, _cameraStartTime } = get();
 
         try {
           // Stop FFmpeg screen recording
@@ -297,36 +343,26 @@ export const useRecorderStore = create<RecorderState>()(
 
         clearTimer();
 
-        // If we have both screen recording and camera, merge them
+        // Save camera blob to disk (no merge — editor renders them separately)
         if (outputPath && cameraBlob && cameraLayout) {
-          set(
-            { recordingState: "processing" },
-            false,
-            "processingMerge",
-          );
-
           try {
-            // Save camera blob to disk via Tauri fs plugin
             const ext = cameraFileExtension();
             const cameraPath = `${outputPath}.camera${ext}`;
             const bytes = new Uint8Array(await cameraBlob.arrayBuffer());
             await writeFile(cameraPath, bytes);
+            savedCameraPath = cameraPath;
 
             console.debug(
               `[recorder] Camera saved to ${cameraPath} (${(bytes.length / 1024 / 1024).toFixed(1)} MB)`,
             );
 
-            // Merge screen + camera overlay
-            outputPath = await invoke<string>("merge_camera_overlay", {
-              screenPath: outputPath,
-              cameraPath,
-              cameraLayout,
-            });
-
-            console.debug("[recorder] Merge completed:", outputPath);
+            // Compute sync offset (camera started slightly after screen)
+            savedSyncOffset = (_screenStartTime && _cameraStartTime)
+              ? (_cameraStartTime - _screenStartTime) / 1000
+              : 0;
           } catch (err) {
-            console.error("Failed to merge camera overlay:", err);
-            // Keep the screen-only recording as fallback
+            console.error("Failed to save camera recording:", err);
+            savedCameraPath = null;
           }
         }
 
@@ -334,8 +370,14 @@ export const useRecorderStore = create<RecorderState>()(
           {
             recordingState: "idle",
             lastRecordingPath: outputPath,
+            lastScreenOnlyPath: null,
+            lastCameraPath: savedCameraPath,
+            lastCameraLayout: savedCameraPath ? cameraLayout : null,
+            lastSyncOffset: savedSyncOffset,
             zoomOverlay: null,
             _cameraLayout: null,
+            _screenStartTime: null,
+            _cameraStartTime: null,
           },
           false,
           "stopRecording",
@@ -352,6 +394,8 @@ export const useRecorderStore = create<RecorderState>()(
             selectedCameraId: null,
             selectedMicId: null,
             _cameraLayout: null,
+            _screenStartTime: null,
+            _cameraStartTime: null,
           },
           false,
           "resetState",

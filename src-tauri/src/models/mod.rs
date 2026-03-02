@@ -42,6 +42,33 @@ pub struct CameraLayout {
     pub width: f64,
     /// Height as percentage of screen height (0-100)
     pub height: f64,
+    /// Shape: "rectangle" | "rounded" | "circle"
+    #[serde(default)]
+    pub shape: Option<String>,
+    /// Border radius percentage (0-50) for "rounded" shape
+    #[serde(default)]
+    pub border_radius: Option<f64>,
+    /// Border width in pixels
+    #[serde(default)]
+    pub border_width: Option<u32>,
+    /// Border color as hex string (e.g. "#ffffff")
+    #[serde(default)]
+    pub border_color: Option<String>,
+    /// Whether to add a drop shadow
+    #[serde(default)]
+    pub shadow: Option<bool>,
+    /// Crop X offset as percentage of camera native width (0-100, default 0)
+    #[serde(default)]
+    pub crop_x: Option<f64>,
+    /// Crop Y offset as percentage of camera native height (0-100, default 0)
+    #[serde(default)]
+    pub crop_y: Option<f64>,
+    /// Crop width as percentage of camera native width (0-100, default 100)
+    #[serde(default)]
+    pub crop_width: Option<f64>,
+    /// Crop height as percentage of camera native height (0-100, default 100)
+    #[serde(default)]
+    pub crop_height: Option<f64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -126,9 +153,66 @@ pub struct ZoomMarker {
     pub scale: f64,
 }
 
+/// A mouse click event captured during recording.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct MouseClickEvent {
+    pub x: f64,
+    pub y: f64,
+    pub timestamp_ms: u64,
+    pub button: u8, // 0=left, 1=right, 2=middle
+}
+
+/// Configuration for auto-zoom generation from click data.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct AutoZoomConfig {
+    /// Sliding window duration for clustering clicks (default: 1500ms)
+    pub time_window_ms: u64,
+    /// Maximum distance between clicks in a cluster (default: 200px)
+    pub spatial_threshold_px: f64,
+    /// Minimum clicks to form a zoom cluster (default: 2)
+    pub min_clicks: u32,
+    /// Zoom scale factor (default: 1.5)
+    pub scale: f64,
+    /// Hold duration after last click before zooming out (default: 400ms)
+    pub hold_after_ms: u64,
+    /// Ramp-in transition duration (default: 300ms)
+    pub ramp_in_ms: u64,
+    /// Ramp-out transition duration (default: 200ms)
+    pub ramp_out_ms: u64,
+}
+
 // ---------------------------------------------------------------------------
 // Project / Editor types
 // ---------------------------------------------------------------------------
+
+/// Camera overlay for zoom-aware export (zoom only affects screen, not camera)
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct CameraOverlayData {
+    pub path: String,
+    pub sync_offset: f64,
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+    #[serde(default)]
+    pub shape: Option<String>,
+    #[serde(default)]
+    pub border_radius: Option<f64>,
+    #[serde(default)]
+    pub border_width: Option<u32>,
+    #[serde(default)]
+    pub border_color: Option<String>,
+    #[serde(default)]
+    pub shadow: Option<bool>,
+    #[serde(default)]
+    pub crop_x: Option<f64>,
+    #[serde(default)]
+    pub crop_y: Option<f64>,
+    #[serde(default)]
+    pub crop_width: Option<f64>,
+    #[serde(default)]
+    pub crop_height: Option<f64>,
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ProjectData {
@@ -138,6 +222,8 @@ pub struct ProjectData {
     pub frame_rate: f64,
     pub tracks: Vec<TrackData>,
     pub assets: Vec<String>,
+    #[serde(default)]
+    pub camera_overlay: Option<CameraOverlayData>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

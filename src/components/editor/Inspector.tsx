@@ -21,11 +21,15 @@ import {
   Check,
   AlertCircle,
   Info,
+  MousePointerClick,
 } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
 import { useEditorStore } from "@/stores/editorStore";
 import { removeSilence } from "@/lib/ffmpeg";
+import { zoomMarkersToEffects } from "@/lib/zoom";
 import type { Segment } from "@/lib/ffmpeg";
 import type { Effect, Overlay } from "@/types/project";
+import { ZOOM_ASSET_ID } from "@/types/project";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -42,6 +46,7 @@ export default function Inspector() {
     selectedTrackId,
     updateClip,
     addEffect,
+    addEffects,
     updateEffect,
     removeEffect,
     addOverlay,
@@ -54,6 +59,7 @@ export default function Inspector() {
     (c) => c.id === selectedClipId,
   );
   const asset = project?.assets.find((a) => a.id === selectedClip?.assetId);
+  const isZoomClip = selectedClip?.assetId === ZOOM_ASSET_ID;
 
   // ── Empty state ─────────────────────────────────────────────────────────
 
@@ -64,6 +70,17 @@ export default function Inspector() {
           Select a clip to edit its properties
         </p>
       </div>
+    );
+  }
+
+  // ── Zoom clip inspector ─────────────────────────────────────────────────
+
+  if (isZoomClip) {
+    return (
+      <ZoomClipInspector
+        clip={selectedClip}
+        track={selectedTrack}
+      />
     );
   }
 
@@ -209,6 +226,16 @@ export default function Inspector() {
               />
             </Section>
 
+            <AutoZoomSection
+              trackId={selectedTrack.id}
+              clipId={selectedClip.id}
+              assetPath={asset?.path}
+              clipDuration={clipDuration}
+              onAddEffects={(effects) =>
+                addEffects(selectedTrack.id, selectedClip.id, effects)
+              }
+            />
+
             {/* Summary info */}
             {selectedClip.effects.length > 0 && (
               <div className="text-[10px] text-neutral-600 pt-1 border-t border-neutral-800">
@@ -311,9 +338,12 @@ function EffectRow({
     fade_out: <Sparkles size={12} className="text-purple-400" />,
   };
   const isZoom = effect.type === "zoom";
-  const scale = effect.params.scale ?? 1.3;
-  const posX = effect.params.x ?? 50;
-  const posY = effect.params.y ?? 50;
+  const scale = (effect.params.scale as number) ?? 1.3;
+  const posX = (effect.params.x as number) ?? 50;
+  const posY = (effect.params.y as number) ?? 50;
+  const easing = (effect.params.easing as string) ?? "ease-in-out";
+  const rampIn = (effect.params.rampIn as number) ?? 0.3;
+  const rampOut = (effect.params.rampOut as number) ?? 0.3;
 
   return (
     <div className="bg-neutral-800 rounded overflow-hidden border border-neutral-700/50">
@@ -409,6 +439,46 @@ function EffectRow({
                 step={1}
                 format={(v) => `${Math.round(v)}%`}
                 onChange={(v) => onUpdate({ params: { ...effect.params, y: v } })}
+              />
+            </div>
+          )}
+
+          {/* Easing controls for zoom effects */}
+          {isZoom && (
+            <div className="space-y-1">
+              <div className="flex items-center gap-1 text-[10px] text-neutral-400 font-medium uppercase tracking-wider">
+                Easing
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] text-neutral-500 w-10 shrink-0">Curve</span>
+                <select
+                  value={easing}
+                  onChange={(e) => onUpdate({ params: { ...effect.params, easing: e.target.value } })}
+                  className="flex-1 text-[10px] bg-neutral-700 text-neutral-200 rounded px-1.5 py-1 border border-neutral-600 outline-none focus:ring-1 focus:ring-blue-500"
+                >
+                  <option value="ease-in-out">Ease In-Out</option>
+                  <option value="ease-in">Ease In</option>
+                  <option value="ease-out">Ease Out</option>
+                  <option value="linear">Linear</option>
+                </select>
+              </div>
+              <EffectSlider
+                label="Ramp In"
+                value={rampIn}
+                min={0.05}
+                max={1.0}
+                step={0.05}
+                format={(v) => `${v.toFixed(2)}s`}
+                onChange={(v) => onUpdate({ params: { ...effect.params, rampIn: v } })}
+              />
+              <EffectSlider
+                label="Ramp Out"
+                value={rampOut}
+                min={0.05}
+                max={1.0}
+                step={0.05}
+                format={(v) => `${v.toFixed(2)}s`}
+                onChange={(v) => onUpdate({ params: { ...effect.params, rampOut: v } })}
               />
             </div>
           )}
@@ -614,6 +684,325 @@ function AddOverlayButton({ onAdd }: { onAdd: (o: Overlay) => void }) {
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>
+  );
+}
+
+// ─── Auto Zoom Section ───────────────────────────────────────────────────────
+
+interface AutoZoomSectionProps {
+  trackId: string;
+  clipId: string;
+  assetPath?: string;
+  clipDuration: number;
+  onAddEffects: (effects: Effect[]) => void;
+}
+
+function AutoZoomSection({ trackId, clipId, assetPath, clipDuration }: AutoZoomSectionProps) {
+  const project = useEditorStore((s) => s.project);
+  const addZoomClip = useEditorStore((s) => s.addZoomClip);
+  const _pushHistory = useEditorStore((s) => s._pushHistory);
+  const [timeWindow, setTimeWindow] = useState(1.5);
+  const [spatialThreshold, setSpatialThreshold] = useState(200);
+  const [minClicks, setMinClicks] = useState(2);
+  const [zoomScale, setZoomScale] = useState(1.5);
+  const [status, setStatus] = useState<"idle" | "generating" | "done" | "error">("idle");
+  const [error, setError] = useState<string | null>(null);
+  const [generatedCount, setGeneratedCount] = useState(0);
+
+  const handleGenerate = async () => {
+    if (!assetPath) return;
+    setStatus("generating");
+    setError(null);
+    try {
+      const markers = await invoke<Array<{
+        start_ms: number;
+        end_ms: number;
+        x: number;
+        y: number;
+        scale: number;
+      }>>("generate_auto_zoom", {
+        recordingPath: assetPath,
+        config: {
+          time_window_ms: Math.round(timeWindow * 1000),
+          spatial_threshold_px: spatialThreshold,
+          min_clicks: minClicks,
+          scale: zoomScale,
+          hold_after_ms: 400,
+          ramp_in_ms: 300,
+          ramp_out_ms: 200,
+        },
+        screenWidth: 1920,
+        screenHeight: 1080,
+      });
+
+      const effects = zoomMarkersToEffects(markers);
+      if (effects.length === 0) {
+        setError("No click clusters found. Try lowering min clicks or increasing the time window.");
+        setStatus("error");
+        return;
+      }
+
+      // Place zoom effects on the zoom track as individual clips
+      for (const e of effects) {
+        addZoomClip(e.startTime, e.duration, {
+          x: (e.params.x as number) ?? 50,
+          y: (e.params.y as number) ?? 50,
+          scale: (e.params.scale as number) ?? 1.5,
+        });
+      }
+      setGeneratedCount(effects.length);
+      setStatus("done");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setStatus("error");
+    }
+  };
+
+  const handleClearAutoZooms = () => {
+    if (!project) return;
+    _pushHistory();
+    const zoomTrack = project.tracks.find((t) => t.type === "zoom");
+    if (!zoomTrack) return;
+    // Remove clips whose first effect has source="auto"
+    const manualClips = zoomTrack.clips.filter((c) => {
+      const firstEffect = c.effects[0];
+      return !firstEffect || firstEffect.params.source !== "auto";
+    });
+    useEditorStore.setState({
+      project: {
+        ...project,
+        tracks: project.tracks.map((t) =>
+          t.id === zoomTrack.id ? { ...t, clips: manualClips } : t,
+        ),
+      },
+    });
+  };
+
+  return (
+    <Section label="Regenerate Auto Zoom">
+      <p className="text-[10px] text-neutral-600 mb-2">
+        Tweak parameters and regenerate zoom effects from click patterns
+      </p>
+
+      <EffectSlider
+        label="Window"
+        value={timeWindow}
+        min={1}
+        max={5}
+        step={0.5}
+        format={(v) => `${v.toFixed(1)}s`}
+        onChange={setTimeWindow}
+      />
+      <EffectSlider
+        label="Distance"
+        value={spatialThreshold}
+        min={100}
+        max={400}
+        step={10}
+        format={(v) => `${Math.round(v)}px`}
+        onChange={setSpatialThreshold}
+      />
+      <EffectSlider
+        label="Min Clicks"
+        value={minClicks}
+        min={1}
+        max={5}
+        step={1}
+        format={(v) => `${Math.round(v)}`}
+        onChange={setMinClicks}
+      />
+      <EffectSlider
+        label="Scale"
+        value={zoomScale}
+        min={1.2}
+        max={3.0}
+        step={0.1}
+        format={(v) => `${v.toFixed(1)}x`}
+        onChange={setZoomScale}
+      />
+
+      {status === "error" && error && (
+        <div className="flex items-start gap-1.5 text-[11px] text-red-400 bg-red-950/30 rounded p-2 mt-2 border border-red-900/50">
+          <AlertCircle size={13} className="shrink-0 mt-px" />
+          <span className="break-all">{error}</span>
+        </div>
+      )}
+
+      {status === "done" && (
+        <div className="text-[11px] bg-emerald-950/30 rounded p-2 mt-2 border border-emerald-900/50 space-y-0.5">
+          <div className="flex items-center gap-1.5 text-emerald-400 font-medium">
+            <Check size={13} />
+            {generatedCount} auto-zoom effect{generatedCount !== 1 ? "s" : ""} added
+          </div>
+        </div>
+      )}
+
+      <div className="mt-2 flex gap-2">
+        <button
+          onClick={handleGenerate}
+          disabled={!assetPath || status === "generating"}
+          className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-[11px] font-medium
+            bg-cyan-600 hover:bg-cyan-500 active:bg-cyan-700
+            text-white rounded transition-colors shadow-lg shadow-cyan-600/20
+            disabled:opacity-40 disabled:pointer-events-none"
+        >
+          {status === "generating" ? (
+            <>
+              <Loader2 size={12} className="animate-spin" />
+              Analyzing clicks…
+            </>
+          ) : (
+            <>
+              <MousePointerClick size={12} />
+              Regenerate
+            </>
+          )}
+        </button>
+        <button
+          onClick={handleClearAutoZooms}
+          className="px-3 py-2 text-[11px] font-medium text-neutral-400 hover:text-red-400
+            bg-neutral-800 hover:bg-neutral-700 rounded transition-colors border border-neutral-700"
+        >
+          Clear Auto
+        </button>
+      </div>
+
+      {!assetPath && (
+        <p className="text-[10px] text-neutral-600 mt-1.5">
+          Select a clip from a recording with click data
+        </p>
+      )}
+    </Section>
+  );
+}
+
+// ─── Zoom Clip Inspector ─────────────────────────────────────────────────────
+
+function ZoomClipInspector({ clip, track }: { clip: import("@/types/project").Clip; track: import("@/types/project").Track }) {
+  const { updateClip, updateEffect, removeClip, _pushHistory } = useEditorStore();
+  const effect = clip.effects[0];
+  const scale = (effect?.params.scale as number) ?? 1.5;
+  const posX = (effect?.params.x as number) ?? 50;
+  const posY = (effect?.params.y as number) ?? 50;
+  const easing = (effect?.params.easing as string) ?? "ease-in-out";
+  const rampIn = (effect?.params.rampIn as number) ?? 0.3;
+  const rampOut = (effect?.params.rampOut as number) ?? 0.3;
+  const duration = clip.sourceEnd - clip.sourceStart;
+
+  const updateParam = (key: string, value: number | string) => {
+    if (!effect) return;
+    updateEffect(track.id, clip.id, 0, {
+      params: { ...effect.params, [key]: value },
+    });
+  };
+
+  return (
+    <div className="h-full bg-neutral-900 border-l border-neutral-700 flex flex-col overflow-hidden">
+      <div className="px-3 py-2 border-b border-neutral-700 flex-none flex items-center justify-between">
+        <h2 className="text-xs font-semibold text-amber-400 uppercase tracking-wider flex items-center gap-1.5">
+          <ZoomIn size={12} /> Zoom Clip
+        </h2>
+        <button
+          onClick={() => removeClip(track.id, clip.id)}
+          className="text-neutral-500 hover:text-red-400 transition-colors"
+          title="Delete zoom clip"
+        >
+          <Trash2 size={13} />
+        </button>
+      </div>
+
+      <div className="flex-1 overflow-y-auto p-3 space-y-3">
+        <Section label="Timeline">
+          <PropRow label="Position">{fmtTime(clip.trackPosition)}</PropRow>
+          <PropRow label="Duration">{fmtTime(duration)}</PropRow>
+        </Section>
+
+        <Section label="Duration">
+          <EffectSlider
+            label="Length"
+            value={duration}
+            min={0.2}
+            max={10}
+            step={0.1}
+            format={(v) => `${v.toFixed(1)}s`}
+            onChange={(v) => {
+              _pushHistory();
+              updateClip(track.id, clip.id, { sourceEnd: v });
+              if (effect) {
+                updateEffect(track.id, clip.id, 0, { duration: v });
+              }
+            }}
+          />
+        </Section>
+
+        <Section label="Scale">
+          <EffectSlider
+            label="Scale"
+            value={scale}
+            min={0.5}
+            max={3.0}
+            step={0.05}
+            format={(v) => `${v.toFixed(2)}x`}
+            onChange={(v) => updateParam("scale", v)}
+          />
+        </Section>
+
+        <Section label="Focus Point">
+          <EffectSlider
+            label="X"
+            value={posX}
+            min={0}
+            max={100}
+            step={1}
+            format={(v) => `${Math.round(v)}%`}
+            onChange={(v) => updateParam("x", v)}
+          />
+          <EffectSlider
+            label="Y"
+            value={posY}
+            min={0}
+            max={100}
+            step={1}
+            format={(v) => `${Math.round(v)}%`}
+            onChange={(v) => updateParam("y", v)}
+          />
+        </Section>
+
+        <Section label="Easing">
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] text-neutral-500 w-10 shrink-0">Curve</span>
+            <select
+              value={easing}
+              onChange={(e) => updateParam("easing", e.target.value)}
+              className="flex-1 text-[10px] bg-neutral-700 text-neutral-200 rounded px-1.5 py-1 border border-neutral-600 outline-none focus:ring-1 focus:ring-blue-500"
+            >
+              <option value="ease-in-out">Ease In-Out</option>
+              <option value="ease-in">Ease In</option>
+              <option value="ease-out">Ease Out</option>
+              <option value="linear">Linear</option>
+            </select>
+          </div>
+          <EffectSlider
+            label="Ramp In"
+            value={rampIn}
+            min={0.05}
+            max={2.0}
+            step={0.05}
+            format={(v) => `${v.toFixed(2)}s`}
+            onChange={(v) => updateParam("rampIn", v)}
+          />
+          <EffectSlider
+            label="Ramp Out"
+            value={rampOut}
+            min={0.05}
+            max={2.0}
+            step={0.05}
+            format={(v) => `${v.toFixed(2)}s`}
+            onChange={(v) => updateParam("rampOut", v)}
+          />
+        </Section>
+      </div>
+    </div>
   );
 }
 

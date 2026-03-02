@@ -4,6 +4,7 @@ import {
   Video,
   Music,
   Layers,
+  Search,
   Volume2,
   VolumeX,
   Lock,
@@ -24,6 +25,7 @@ const trackConfig: Record<string, { icon: LucideIcon; bg: string }> = {
   video: { icon: Video, bg: "bg-blue-950/30" },
   audio: { icon: Music, bg: "bg-green-950/30" },
   overlay: { icon: Layers, bg: "bg-purple-950/30" },
+  zoom: { icon: Search, bg: "bg-amber-950/30" },
 };
 
 // ─── Component ───────────────────────────────────────────────────────────────

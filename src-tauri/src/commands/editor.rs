@@ -1,4 +1,4 @@
-use crate::models::{ProjectData, Segment, SilenceConfig};
+use crate::models::{AutoZoomConfig, ProjectData, Segment, SilenceConfig, ZoomMarker};
 
 #[tauri::command]
 pub fn create_project(
@@ -80,6 +80,30 @@ pub fn remove_silence(
     }
     // Step 4 – Return segments (no video assembly – that happens on Export)
     Ok(segments)
+}
+
+/// Generate auto-zoom markers from recorded mouse clicks.
+///
+/// Loads click data from the `.clicks.json` sidecar file, runs the
+/// density-based clustering algorithm, and returns zoom markers.
+#[tauri::command]
+pub fn generate_auto_zoom(
+    recording_path: String,
+    config: AutoZoomConfig,
+    screen_width: f64,
+    screen_height: f64,
+) -> Result<Vec<ZoomMarker>, String> {
+    let clicks_path = format!("{}.clicks.json", recording_path);
+    let clicks = crate::recording::mouse_tracker::MouseTracker::load_clicks_from_file(&clicks_path)
+        .map_err(|e| format!("Failed to load click data: {e}"))?;
+
+    if clicks.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let markers =
+        crate::editor::autozoom::generate_auto_zoom(&clicks, &config, screen_width, screen_height);
+    Ok(markers)
 }
 
 /// Convert raw non-silent `(start_ms, end_ms)` ranges into padded, merged

@@ -4,6 +4,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useEditorStore } from "@/stores/editorStore";
 import { probeMedia } from "@/lib/ffmpeg";
 import PreviewCanvas from "./PreviewCanvas";
+import ScenePresetPicker from "./ScenePresetPicker";
 import Inspector from "./Inspector";
 import Timeline from "./Timeline";
 import Toolbar from "./Toolbar";
@@ -22,6 +23,7 @@ export default function EditorView() {
     redo,
     setTool,
     createNewProject,
+    applyScenePreset,
   } = useEditorStore();
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -207,9 +209,16 @@ export default function EditorView() {
         className="flex min-h-0"
         style={{ flex: `0 0 ${topHeight}%` }}
       >
-        {/* Preview */}
-        <div className="min-w-0 overflow-hidden" style={{ width: `${previewWidth}%` }}>
-          <PreviewCanvas />
+        {/* Preview + Scene Presets */}
+        <div className="min-w-0 overflow-hidden flex flex-col" style={{ width: `${previewWidth}%` }}>
+          <div className="flex-1 min-h-0">
+            <PreviewCanvas />
+          </div>
+          {project.cameraOverlay && (
+            <div className="flex-none border-t border-neutral-800 bg-neutral-900/50">
+              <ScenePresetPicker onSelect={applyScenePreset} />
+            </div>
+          )}
         </div>
 
         {/* Horizontal resize divider */}

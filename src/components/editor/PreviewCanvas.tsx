@@ -11,7 +11,8 @@ import {
 } from "lucide-react";
 import { useEditorStore } from "@/stores/editorStore";
 import { streamUrl } from "@/lib/stream";
-import type { Clip, Asset, Effect } from "@/types/project";
+import type { Clip, Asset, Effect, Project, CameraOverlayInfo } from "@/types/project";
+import { ZOOM_ASSET_ID } from "@/types/project";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -23,37 +24,147 @@ function formatTimecode(seconds: number, frameRate = 30): string {
 }
 
 /**
- * Compute zoom transform: ramp up at start, hold, ramp down at end.
- * Matches toggle behavior: first shortcut = zoom in, second = zoom out.
+ * Hermite smoothstep: 3t² - 2t³ (clamped to 0-1)
+ */
+function smoothstep(t: number): number {
+  const clamped = Math.max(0, Math.min(1, t));
+  return 3 * clamped * clamped - 2 * clamped * clamped * clamped;
+}
+
+/**
+ * Apply an easing function to a 0-1 progress value.
+ */
+function applyEasing(t: number, easing: string): number {
+  const clamped = Math.max(0, Math.min(1, t));
+  switch (easing) {
+    case "ease-in":
+      return clamped * clamped * clamped;
+    case "ease-out":
+      return 1 - Math.pow(1 - clamped, 3);
+    case "linear":
+      return clamped;
+    default: // ease-in-out (smoothstep)
+      return smoothstep(clamped);
+  }
+}
+
+/**
+ * Collect zoom effects from the zoom track that are active at a given playhead position.
+ * Returns them as Effect[] with absolute timeline positions converted to clip-relative.
+ */
+function getZoomTrackEffects(project: Project, playheadPos: number): Effect[] {
+  const zoomTrack = project.tracks.find((t) => t.type === "zoom" && !t.muted);
+  if (!zoomTrack) return [];
+
+  for (const clip of zoomTrack.clips) {
+    if (clip.assetId !== ZOOM_ASSET_ID) continue;
+    const dur = clip.sourceEnd - clip.sourceStart;
+    const clipEnd = clip.trackPosition + dur;
+    if (playheadPos >= clip.trackPosition && playheadPos < clipEnd) {
+      // Return the zoom effect with startTime relative to the zoom clip's track position
+      return clip.effects.filter((e) => e.type === "zoom").map((e) => ({
+        ...e,
+        // Convert: effect is already at startTime=0 relative to zoom clip,
+        // we need it relative to clipTrackPos=0 for the compute function
+        startTime: clip.trackPosition + e.startTime,
+        duration: e.duration,
+      }));
+    }
+  }
+  return [];
+}
+
+/**
+ * Compute zoom transform with smooth easing transitions.
+ *
+ * Three phases: ramp-in → hold → ramp-out, using configurable easing
+ * and ramp durations from effect.params (defaults: 0.3s, ease-in-out).
+ * Matches the FFmpeg export filter behavior exactly.
+ *
+ * Checks zoom track first, then falls back to embedded clip effects.
  */
 function computeZoomTransform(
   effects: Effect[],
   clipTrackPos: number,
   playheadPos: number,
+  project?: Project | null,
 ): { scale: number; originX: number; originY: number; isActive: boolean } {
   let scale = 1;
   let originX = 50;
   let originY = 50;
   let isActive = false;
-  const RAMP = 0.15; // First/last 15% of duration for smooth ramp
+
+  // Collect zoom effects from both zoom track (absolute positions) and embedded effects
+  const zoomTrackEffects = project ? getZoomTrackEffects(project, playheadPos) : [];
+
+  // Check zoom track effects first (they use absolute timeline positions)
+  for (const e of zoomTrackEffects) {
+    const effectStart = e.startTime; // already absolute
+    const effectEnd = effectStart + e.duration;
+    if (playheadPos >= effectStart && playheadPos < effectEnd) {
+      const targetScale = (e.params.scale as number) ?? 2;
+      const rampIn = (e.params.rampIn as number) ?? 0.3;
+      const rampOut = (e.params.rampOut as number) ?? 0.3;
+      const easing = (e.params.easing as string) ?? "ease-in-out";
+      const dur = e.duration;
+      const rampInClamped = Math.min(rampIn, dur / 2);
+      const rampOutClamped = Math.min(rampOut, dur / 2);
+      const elapsed = playheadPos - effectStart;
+      const rampInEnd = rampInClamped;
+      const rampOutStart = dur - rampOutClamped;
+      let mix: number;
+      if (elapsed < rampInEnd) {
+        mix = applyEasing(rampInClamped > 0 ? elapsed / rampInClamped : 1, easing);
+      } else if (elapsed >= rampOutStart) {
+        mix = 1 - applyEasing(rampOutClamped > 0 ? (elapsed - rampOutStart) / rampOutClamped : 1, easing);
+      } else {
+        mix = 1;
+      }
+      scale = 1 + (targetScale - 1) * mix;
+      originX = (e.params.x as number) ?? 50;
+      originY = (e.params.y as number) ?? 50;
+      isActive = true;
+      return { scale, originX, originY, isActive };
+    }
+  }
+
+  // Fallback: check embedded clip effects (backward compat)
   for (const e of effects) {
     if (e.type !== "zoom") continue;
     const effectStart = clipTrackPos + e.startTime;
     const effectEnd = effectStart + e.duration;
     if (playheadPos >= effectStart && playheadPos < effectEnd) {
-      const progress = (playheadPos - effectStart) / e.duration;
-      const targetScale = e.params.scale ?? 2;
+      const targetScale = (e.params.scale as number) ?? 2;
+      const rampIn = (e.params.rampIn as number) ?? 0.3;
+      const rampOut = (e.params.rampOut as number) ?? 0.3;
+      const easing = (e.params.easing as string) ?? "ease-in-out";
+
+      // Clamp ramp durations
+      const dur = e.duration;
+      const rampInClamped = Math.min(rampIn, dur / 2);
+      const rampOutClamped = Math.min(rampOut, dur / 2);
+
+      const elapsed = playheadPos - effectStart;
+      const rampInEnd = rampInClamped;
+      const rampOutStart = dur - rampOutClamped;
+
       let mix: number;
-      if (progress < RAMP) {
-        mix = progress / RAMP; // Ramp up
-      } else if (progress > 1 - RAMP) {
-        mix = (1 - progress) / RAMP; // Ramp down
+      if (elapsed < rampInEnd) {
+        // Ramp-in phase
+        const progress = rampInClamped > 0 ? elapsed / rampInClamped : 1;
+        mix = applyEasing(progress, easing);
+      } else if (elapsed >= rampOutStart) {
+        // Ramp-out phase
+        const progress = rampOutClamped > 0 ? (elapsed - rampOutStart) / rampOutClamped : 1;
+        mix = 1 - applyEasing(progress, easing);
       } else {
-        mix = 1; // Hold at max
+        // Hold phase
+        mix = 1;
       }
+
       scale = 1 + (targetScale - 1) * mix;
-      originX = e.params.x ?? 50;
-      originY = e.params.y ?? 50;
+      originX = (e.params.x as number) ?? 50;
+      originY = (e.params.y as number) ?? 50;
       isActive = true;
       break;
     }
@@ -419,6 +530,7 @@ export default function PreviewCanvas() {
             videoRefA={videoRefA}
             videoRefB={videoRefB}
             videoSrc={videoSrc}
+            isPlaying={isPlaying}
           />
         ) : (
           <div className="flex flex-col items-center justify-center text-neutral-700 gap-2">
@@ -482,6 +594,7 @@ function ZoomablePreview({
   videoRefA,
   videoRefB,
   videoSrc,
+  isPlaying,
 }: {
   activeVideo: { clip: import("@/types/project").Clip; asset: import("@/types/project").Asset; sourceTime: number };
   previewDims: { width: number; height: number };
@@ -491,12 +604,20 @@ function ZoomablePreview({
   videoRefA: React.RefObject<HTMLVideoElement>;
   videoRefB: React.RefObject<HTMLVideoElement>;
   videoSrc: string;
+  isPlaying: boolean;
 }) {
   const zoom = computeZoomTransform(
     activeVideo.clip.effects,
     activeVideo.clip.trackPosition,
     playheadPosition,
+    project,
   );
+
+  // For split layouts (camera height === 100%), constrain screen canvas width
+  const cam = project.cameraOverlay;
+  const camVisible = cam && !cam.hidden;
+  const isSplitLayout = camVisible && cam.height >= 99;
+  const screenWidthPercent = isSplitLayout ? (100 - cam.width) : 100;
 
   return (
     <div
@@ -505,8 +626,9 @@ function ZoomablePreview({
     >
       {/* Inner container that receives the zoom transform */}
       <div
-        className="relative w-full h-full"
+        className="relative h-full"
         style={{
+          width: `${screenWidthPercent}%`,
           transform: zoom.isActive ? `scale(${zoom.scale})` : undefined,
           transformOrigin: zoom.isActive
             ? `${zoom.originX}% ${zoom.originY}%`
@@ -575,6 +697,15 @@ function ZoomablePreview({
           ))}
       </div>
 
+      {/* Camera overlay — rendered OUTSIDE the zoom div so zoom doesn't affect it */}
+      {project.cameraOverlay && !project.cameraOverlay.hidden && (
+        <CameraOverlayElement
+          cameraOverlay={project.cameraOverlay}
+          sourceTime={activeVideo.sourceTime}
+          isPlaying={isPlaying}
+        />
+      )}
+
       {/* Zoom indicator badge */}
       {zoom.isActive && (
         <div className="absolute top-2 right-2 flex items-center gap-1 px-2 py-1 rounded-md bg-blue-600/80 text-white text-[10px] font-medium backdrop-blur-sm pointer-events-none z-10">
@@ -582,6 +713,94 @@ function ZoomablePreview({
           {zoom.scale.toFixed(2)}x
         </div>
       )}
+    </div>
+  );
+}
+
+/** Camera overlay video element — positioned absolutely, NOT affected by zoom. */
+function CameraOverlayElement({
+  cameraOverlay,
+  sourceTime,
+  isPlaying,
+}: {
+  cameraOverlay: CameraOverlayInfo;
+  sourceTime: number;
+  isPlaying: boolean;
+}) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  // Sync camera video time when scrubbing
+  useEffect(() => {
+    const vid = videoRef.current;
+    if (!vid || isPlaying) return;
+    const cameraTime = Math.max(0, sourceTime + cameraOverlay.syncOffset);
+    if (Math.abs(vid.currentTime - cameraTime) > 0.05) {
+      vid.currentTime = cameraTime;
+    }
+  }, [sourceTime, isPlaying, cameraOverlay.syncOffset]);
+
+  // Play/pause in sync with main video
+  useEffect(() => {
+    const vid = videoRef.current;
+    if (!vid) return;
+    if (isPlaying) {
+      const cameraTime = Math.max(0, sourceTime + cameraOverlay.syncOffset);
+      vid.currentTime = cameraTime;
+      vid.play().catch(() => {});
+    } else {
+      vid.pause();
+    }
+  }, [isPlaying, sourceTime, cameraOverlay.syncOffset]);
+
+  const cropX = cameraOverlay.cropX ?? 0;
+  const cropY = cameraOverlay.cropY ?? 0;
+  const cropW = cameraOverlay.cropWidth ?? 100;
+  const cropH = cameraOverlay.cropHeight ?? 100;
+
+  // Scale video to show only cropped region filling the container
+  const scaleX = 100 / cropW;
+  const scaleY = 100 / cropH;
+  const offsetX = -(cropX * 100) / cropW;
+  const offsetY = -(cropY * 100) / cropH;
+
+  let borderRadius = "0";
+  if (cameraOverlay.shape === "circle") borderRadius = "50%";
+  else if (cameraOverlay.shape === "rounded")
+    borderRadius = `${cameraOverlay.borderRadius ?? 20}%`;
+
+  return (
+    <div
+      className="absolute pointer-events-none overflow-hidden"
+      style={{
+        left: `${cameraOverlay.x}%`,
+        top: `${cameraOverlay.y}%`,
+        width: `${cameraOverlay.width}%`,
+        height: `${cameraOverlay.height}%`,
+        borderRadius,
+        border:
+          cameraOverlay.borderWidth && cameraOverlay.borderWidth > 0
+            ? `${cameraOverlay.borderWidth}px solid ${cameraOverlay.borderColor ?? "#fff"}`
+            : undefined,
+        boxShadow: cameraOverlay.shadow
+          ? "0 4px 20px rgba(0,0,0,0.5)"
+          : undefined,
+        zIndex: 10,
+      }}
+    >
+      <video
+        ref={videoRef}
+        src={streamUrl(cameraOverlay.path)}
+        style={{
+          width: `${scaleX * 100}%`,
+          height: `${scaleY * 100}%`,
+          marginLeft: `${offsetX}%`,
+          marginTop: `${offsetY}%`,
+          objectFit: "cover",
+        }}
+        playsInline
+        muted
+        preload="auto"
+      />
     </div>
   );
 }

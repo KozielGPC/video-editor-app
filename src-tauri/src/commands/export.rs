@@ -44,7 +44,20 @@ pub fn start_export(
     };
 
     // Build the filter graph from the project data
+    eprintln!(
+        "[export] Project has {} tracks, {} assets",
+        config.project.tracks.len(),
+        config.project.assets.len(),
+    );
+    for t in &config.project.tracks {
+        eprintln!(
+            "[export]   track '{}' type='{}' clips={} muted={} locked={}",
+            t.id, t.track_type, t.clips.len(), t.muted, t.locked,
+        );
+    }
     let graph = crate::editor::ffmpeg::build_export_filter_complex(&config.project);
+
+    eprintln!("[export] Filter complex:\n{}", graph.filter_complex);
 
     // Assemble FFmpeg arguments
     let mut args: Vec<String> = vec!["-y".into()];

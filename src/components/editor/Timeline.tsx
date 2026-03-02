@@ -6,7 +6,7 @@ import {
   useMemo,
 } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { Plus, Video, Music, Layers } from "lucide-react";
+import { Plus, Video, Music, Layers, Search } from "lucide-react";
 import { useEditorStore } from "@/stores/editorStore";
 import TimelineTrack, { HEADER_WIDTH, TRACK_HEIGHT } from "./TimelineTrack";
 
@@ -275,6 +275,14 @@ export default function Timeline() {
                       onSelect={() => addTrack("overlay")}
                     >
                       <Layers size={14} className="text-purple-400" /> Overlay
+                    </DropdownMenu.Item>
+                    <DropdownMenu.Item
+                      className="flex items-center gap-2 px-3 py-1.5 text-sm text-neutral-200
+                        rounded hover:bg-neutral-700 cursor-pointer outline-none
+                        data-[highlighted]:bg-neutral-700"
+                      onSelect={() => addTrack("zoom")}
+                    >
+                      <Search size={14} className="text-amber-400" /> Zoom
                     </DropdownMenu.Item>
                   </DropdownMenu.Content>
                 </DropdownMenu.Portal>

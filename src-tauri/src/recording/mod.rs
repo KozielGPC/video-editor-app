@@ -1,4 +1,5 @@
 pub mod audio;
+pub mod audio_capture;
 pub mod camera;
 pub mod encoder;
 pub mod mouse_tracker;
@@ -7,10 +8,12 @@ pub mod screen;
 use crate::models::{RecordingConfig, RecordingState, ZoomMarker};
 use std::time::Instant;
 
-/// Central manager that coordinates FFmpeg-based recording and mouse tracking.
+/// Central manager that coordinates FFmpeg-based recording, cpal audio capture,
+/// and mouse tracking.
 pub struct RecordingManager {
     pub state: RecordingState,
     pub encoder: Option<encoder::RecordingEncoder>,
+    pub audio: Option<audio_capture::AudioCapture>,
     pub mouse_tracker: Option<mouse_tracker::MouseTracker>,
     pub output_path: Option<String>,
     pub zoom_markers: Vec<ZoomMarker>,
@@ -29,6 +32,7 @@ impl RecordingManager {
         Self {
             state: RecordingState::Idle,
             encoder: None,
+            audio: None,
             mouse_tracker: None,
             output_path: None,
             zoom_markers: Vec::new(),
@@ -49,8 +53,7 @@ impl RecordingManager {
         let screen_idx = config.screen_id.as_deref();
         let mic_idx = config.mic_id.as_deref();
 
-        // Camera is recorded separately by the browser (MediaRecorder)
-        // and merged in post-processing, so we only record screen + mic here.
+        // Start FFmpeg for screen capture only (video, no audio)
         let enc = encoder::RecordingEncoder::start(
             &config.output_path,
             screen_idx,
@@ -58,6 +61,21 @@ impl RecordingManager {
             30,
         )?;
         self.encoder = Some(enc);
+
+        // Start cpal audio capture if a mic is selected
+        let has_mic = mic_idx.is_some() && mic_idx != Some("none");
+        if has_mic {
+            let wav_path = format!("{}.audio.wav", config.output_path);
+            match audio_capture::AudioCapture::start(mic_idx.unwrap(), &wav_path) {
+                Ok(capture) => {
+                    self.audio = Some(capture);
+                    eprintln!("[recording] cpal audio capture started → {wav_path}");
+                }
+                Err(e) => {
+                    eprintln!("[recording] WARNING: cpal audio failed, continuing without audio: {e}");
+                }
+            }
+        }
 
         let mut tracker = mouse_tracker::MouseTracker::new();
         tracker.start();
@@ -80,10 +98,6 @@ impl RecordingManager {
         if self.state != RecordingState::Recording {
             return Err("Not currently recording".to_string());
         }
-        // Note: FFmpeg avfoundation doesn't natively support pause.
-        // We track the paused state so the UI reflects it, but the
-        // recording continues. A proper implementation would stop and
-        // restart FFmpeg, concatenating segments on stop.
         self.state = RecordingState::Paused;
         Ok(())
     }
@@ -101,9 +115,45 @@ impl RecordingManager {
             return Err("No recording in progress".to_string());
         }
 
-        // Stop FFmpeg encoder
+        // Stop FFmpeg encoder (video only)
         if let Some(enc) = self.encoder.take() {
             enc.stop()?;
+        }
+
+        // Stop cpal audio capture and mux into the video file
+        let wav_path = if let Some(audio) = self.audio.take() {
+            match audio.stop() {
+                Ok(path) => Some(path),
+                Err(e) => {
+                    eprintln!("[recording] WARNING: Failed to stop audio capture: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        // Mux audio into the video if we have a WAV file
+        if let (Some(ref video_path), Some(ref wav)) = (&self.output_path, &wav_path) {
+            let muxed_path = format!(
+                "{}_muxed.mp4",
+                video_path.trim_end_matches(".mp4")
+            );
+            match encoder::RecordingEncoder::mux_audio(video_path, wav, &muxed_path) {
+                Ok(()) => {
+                    // Replace original video-only file with muxed version
+                    if let Err(e) = std::fs::rename(&muxed_path, video_path) {
+                        eprintln!("[recording] WARNING: rename failed, keeping muxed file: {e}");
+                        self.output_path = Some(muxed_path);
+                    }
+                    // Clean up WAV file
+                    std::fs::remove_file(wav).ok();
+                    eprintln!("[recording] Audio muxed successfully");
+                }
+                Err(e) => {
+                    eprintln!("[recording] WARNING: Audio mux failed, video has no audio: {e}");
+                }
+            }
         }
 
         // Stop mouse tracker and persist data
@@ -112,6 +162,8 @@ impl RecordingManager {
             if let Some(ref out) = self.output_path {
                 let mouse_path = format!("{}.mouse.json", out);
                 tracker.save_to_file(&mouse_path).ok();
+                let clicks_path = format!("{}.clicks.json", out);
+                tracker.save_clicks_to_file(&clicks_path).ok();
             }
         }
 
