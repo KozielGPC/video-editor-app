@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
-import { Loader2, X, CheckCircle2 } from "lucide-react";
+import { Loader2, X, CheckCircle2, FolderOpen, Play } from "lucide-react";
+import { useUIStore } from "@/stores/uiStore";
 
 /** Payload emitted by the Rust `start_export` command via `export-progress` events. */
 interface RustExportEvent {
@@ -60,6 +61,8 @@ export default function ExportProgress({
   // Track start time for ETA calculation
   const startTimeRef = useRef<number>(0);
 
+  const exportOutputPath = useUIStore((s) => s.exportOutputPath);
+
   /* Listen to Tauri export-progress events */
   useEffect(() => {
     if (!isVisible) return;
@@ -84,14 +87,13 @@ export default function ExportProgress({
           const elapsedSec = (Date.now() - startTimeRef.current) / 1000;
           const pct = Math.max(raw.percent, 0.1); // avoid division by zero
           const estimatedTotalSec = pct > 0 ? (elapsedSec / pct) * 100 : 0;
-          const remainingSec = Math.max(0, estimatedTotalSec - elapsedSec);
           setProgress({
             percent: raw.percent,
             elapsed: elapsedSec,
             estimated: estimatedTotalSec,
             status: raw.done
               ? "Export complete"
-              : `Exporting… ${raw.percent}%`,
+              : `Exporting\u2026 ${raw.percent}%`,
           });
           if (raw.done || raw.percent >= 100) {
             setIsComplete(true);
@@ -136,10 +138,25 @@ export default function ExportProgress({
     onCancel();
   }, [onCancel]);
 
-  /* Complete */
-  const handleDone = useCallback(() => {
-    onComplete();
-  }, [onComplete]);
+  /* Open exported video with default player */
+  const handleOpenVideo = useCallback(async () => {
+    if (!exportOutputPath) return;
+    try {
+      await invoke("open_file", { path: exportOutputPath });
+    } catch (err) {
+      console.error("Failed to open video:", err);
+    }
+  }, [exportOutputPath]);
+
+  /* Reveal in Finder */
+  const handleOpenFolder = useCallback(async () => {
+    if (!exportOutputPath) return;
+    try {
+      await invoke("reveal_in_finder", { path: exportOutputPath });
+    } catch (err) {
+      console.error("Failed to open folder:", err);
+    }
+  }, [exportOutputPath]);
 
   if (!isVisible) return null;
 
@@ -156,15 +173,13 @@ export default function ExportProgress({
             )}
             {isComplete ? "Export Complete" : "Exporting..."}
           </h2>
-          {!isComplete && (
-            <button
-              onClick={handleCancel}
-              className="p-1.5 rounded-md text-neutral-400 hover:text-neutral-100 hover:bg-neutral-800 transition-interactive"
-              title="Cancel export"
-            >
-              <X size={16} />
-            </button>
-          )}
+          <button
+            onClick={isComplete ? onComplete : handleCancel}
+            className="p-1.5 rounded-md text-neutral-400 hover:text-neutral-100 hover:bg-neutral-800 transition-interactive"
+            title={isComplete ? "Close" : "Cancel export"}
+          >
+            <X size={16} />
+          </button>
         </div>
 
         {/* Progress bar */}
@@ -208,12 +223,22 @@ export default function ExportProgress({
         {/* Actions */}
         <div className="flex justify-end gap-3">
           {isComplete ? (
-            <button
-              onClick={handleDone}
-              className="px-5 py-2 rounded-lg text-sm font-medium text-white bg-blue-600 hover:bg-blue-500 active:bg-blue-700 shadow-lg shadow-blue-600/20 transition-interactive"
-            >
-              Done
-            </button>
+            <>
+              <button
+                onClick={handleOpenFolder}
+                className="px-4 py-2 rounded-lg text-sm font-medium text-neutral-300 bg-neutral-800 border border-neutral-700 hover:bg-neutral-750 hover:border-neutral-600 transition-interactive flex items-center gap-2"
+              >
+                <FolderOpen size={15} />
+                Open Folder
+              </button>
+              <button
+                onClick={handleOpenVideo}
+                className="px-4 py-2 rounded-lg text-sm font-medium text-white bg-blue-600 hover:bg-blue-500 active:bg-blue-700 shadow-lg shadow-blue-600/20 transition-interactive flex items-center gap-2"
+              >
+                <Play size={15} />
+                Open Video
+              </button>
+            </>
           ) : (
             <button
               onClick={handleCancel}

@@ -146,6 +146,8 @@ pub fn run() {
             commands::media::probe_media,
             commands::media::generate_thumbnails,
             commands::media::extract_audio,
+            commands::media::open_file,
+            commands::media::reveal_in_finder,
             // Editor
             commands::editor::create_project,
             commands::editor::save_project,

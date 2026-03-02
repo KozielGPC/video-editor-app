@@ -47,12 +47,7 @@ function PostRecordingBanner() {
   const handleRevealInFinder = useCallback(async () => {
     if (!lastRecordingPath) return;
     try {
-      await invoke("plugin:shell|open", {
-        path: lastRecordingPath.substring(
-          0,
-          lastRecordingPath.lastIndexOf("/"),
-        ),
-      });
+      await invoke("reveal_in_finder", { path: lastRecordingPath });
     } catch (err) {
       console.error("Failed to reveal in Finder:", err);
     }

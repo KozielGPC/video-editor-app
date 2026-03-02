@@ -180,25 +180,51 @@ impl MouseTracker {
         serde_json::from_str(&data).map_err(|e| format!("parse: {e}"))
     }
 
-    /// Return positions within a timestamp range (inclusive), downsampled to ~20 Hz (every 50ms).
+    /// Return smoothed positions within a timestamp range.
+    ///
+    /// Applies an exponential moving average (EMA) to the raw 60 Hz data to
+    /// create a natural "camera follow" effect, then downsamples to ~5 Hz.
+    /// The EMA removes micro-jitter so the downsampled keyframes trace a
+    /// smooth curve — no staircase artefacts even at low sample rates.
     pub fn get_positions_in_range(&self, start_ms: u64, end_ms: u64) -> Vec<MousePosition> {
         let positions = match self.positions.lock() {
             Ok(p) => p,
             Err(_) => return Vec::new(),
         };
+
+        // Collect raw positions in range (60 Hz)
+        let raw: Vec<&MousePosition> = positions
+            .iter()
+            .filter(|p| p.timestamp_ms >= start_ms && p.timestamp_ms <= end_ms)
+            .collect();
+        if raw.is_empty() {
+            return Vec::new();
+        }
+
+        // EMA smoothing — α ≈ 0.10 at 60 Hz gives ~150 ms time-constant,
+        // producing a natural camera-follow lag.
+        let alpha = 0.10;
+        let mut sx = raw[0].x;
+        let mut sy = raw[0].y;
+
         let mut result = Vec::new();
         let mut last_ts: Option<u64> = None;
-        for pos in positions.iter() {
-            if pos.timestamp_ms < start_ms || pos.timestamp_ms > end_ms {
-                continue;
-            }
-            // Downsample to ~20 Hz: keep one sample every 50ms
+
+        for pos in &raw {
+            sx = alpha * pos.x + (1.0 - alpha) * sx;
+            sy = alpha * pos.y + (1.0 - alpha) * sy;
+
+            // Downsample the smoothed stream to ~5 Hz (every 200 ms)
             if let Some(prev) = last_ts {
-                if pos.timestamp_ms - prev < 50 {
+                if pos.timestamp_ms - prev < 200 {
                     continue;
                 }
             }
-            result.push(pos.clone());
+            result.push(MousePosition {
+                x: sx,
+                y: sy,
+                timestamp_ms: pos.timestamp_ms,
+            });
             last_ts = Some(pos.timestamp_ms);
         }
         result

@@ -8,6 +8,8 @@ interface UIState {
   showExportProgress: boolean;
   showSettings: boolean;
   sidebarCollapsed: boolean;
+  /** Path of the most recent export output (set when export starts) */
+  exportOutputPath: string | null;
 
   setActiveView: (view: ActiveView) => void;
   setShowExportDialog: (show: boolean) => void;
@@ -16,6 +18,7 @@ interface UIState {
   setSettingsOpen: (open: boolean) => void;
   toggleSettings: () => void;
   toggleSidebar: () => void;
+  setExportOutputPath: (path: string | null) => void;
 }
 
 export const useUIStore = create<UIState>()((set) => ({
@@ -24,6 +27,7 @@ export const useUIStore = create<UIState>()((set) => ({
   showExportProgress: false,
   showSettings: false,
   sidebarCollapsed: false,
+  exportOutputPath: null,
 
   setActiveView: (view) => set({ activeView: view }),
   setShowExportDialog: (show) => set({ showExportDialog: show }),
@@ -34,4 +38,5 @@ export const useUIStore = create<UIState>()((set) => ({
   toggleSettings: () => set((s) => ({ showSettings: !s.showSettings })),
   toggleSidebar: () =>
     set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
+  setExportOutputPath: (path) => set({ exportOutputPath: path }),
 }));

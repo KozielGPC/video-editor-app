@@ -140,16 +140,21 @@ pub struct ExportGraph {
 /// `t_expr` should be a normalized 0-1 progress value.
 fn ffmpeg_easing_expr(t_expr: &str, easing: &str) -> String {
     match easing {
-        "ease-in" => format!("pow({t_expr}\\,3)"),
-        "ease-out" => format!("(1-pow(1-({t_expr})\\,3))"),
+        "ease-in" => format!("pow({t_expr},3)"),
+        "ease-out" => format!("(1-pow(1-({t_expr}),3))"),
         "linear" => t_expr.to_string(),
         // Default: ease-in-out (Hermite smoothstep: 3t²-2t³)
-        _ => format!("(3*pow({t_expr}\\,2)-2*pow({t_expr}\\,3))"),
+        _ => format!("(3*pow({t_expr},2)-2*pow({t_expr},3))"),
     }
 }
 
-/// Build a crop+scale filter chain that applies zoom effects within a clip
+/// Build a zoompan filter chain that applies zoom effects within a clip
 /// with smooth easing transitions.
+///
+/// Uses FFmpeg's `zoompan` filter instead of `crop` because `crop` evaluates
+/// `w` and `h` only at init time — the `t` variable does NOT work for
+/// dynamic width/height in crop. The `zoompan` filter evaluates `z`, `x`,
+/// `y` expressions per-frame via the `in_time` variable.
 ///
 /// Each zoom effect has three phases:
 /// - **Ramp-in**: smooth transition from scale=1 to target scale
@@ -162,10 +167,13 @@ fn build_zoom_crop_chain(
     effects: &[&EffectData],
     out_w: u32,
     out_h: u32,
+    fps: f64,
 ) -> String {
     if effects.is_empty() {
         return format!("scale={out_w}:{out_h}");
     }
+
+    let fps_int = (fps.round() as u32).max(1);
 
     let param_f64 = |params: &std::collections::HashMap<String, serde_json::Value>,
                       key: &str,
@@ -186,7 +194,8 @@ fn build_zoom_crop_chain(
             .to_string()
     };
 
-    // Build from inside out: start with "no zoom" defaults, wrap with conditions
+    // Build from inside out: start with "no zoom" defaults, wrap with conditions.
+    // NOTE: zoompan uses `in_time` instead of `t` for time-based expressions.
     let mut scale_expr = "1".to_string();
 
     for effect in effects.iter().rev() {
@@ -214,33 +223,28 @@ fn build_zoom_crop_chain(
 
         let scale_delta = s - 1.0;
 
-        // Ramp-in progress: (t - zs) / ramp_in_duration
-        let ramp_in_progress = format!("(t-{zs:.4})/{ramp_in_clamped:.4}");
+        // Ramp-in progress: (in_time - zs) / ramp_in_duration
+        let ramp_in_progress = format!("(in_time-{zs:.4})/{ramp_in_clamped:.4}");
         let ramp_in_eased = ffmpeg_easing_expr(&ramp_in_progress, &easing);
         let ramp_in_scale = format!("(1+{scale_delta:.4}*{ramp_in_eased})");
 
-        // Ramp-out progress: (t - ramp_out_start) / ramp_out_duration
-        let ramp_out_progress = format!("(t-{ramp_out_start:.4})/{ramp_out_clamped:.4}");
+        // Ramp-out progress: (in_time - ramp_out_start) / ramp_out_duration
+        let ramp_out_progress = format!("(in_time-{ramp_out_start:.4})/{ramp_out_clamped:.4}");
         let ramp_out_eased = ffmpeg_easing_expr(&ramp_out_progress, &easing);
         let ramp_out_scale = format!("(1+{scale_delta:.4}*(1-{ramp_out_eased}))");
 
         // Nested conditional: ramp-in → hold → ramp-out → previous
-        // if(between(t, zs, ramp_in_end), ramp_in_scale,
-        //   if(between(t, ramp_in_end, ramp_out_start), target_scale,
-        //     if(between(t, ramp_out_start, ze), ramp_out_scale, prev)))
         scale_expr = format!(
-            "if(between(t\\,{zs:.4}\\,{ramp_in_end:.4})\\,{ramp_in_scale}\\,\
-             if(between(t\\,{ramp_in_end:.4}\\,{ramp_out_start:.4})\\,{s:.4}\\,\
-             if(between(t\\,{ramp_out_start:.4}\\,{ze:.4})\\,{ramp_out_scale}\\,\
+            "if(between(in_time,{zs:.4},{ramp_in_end:.4}),{ramp_in_scale},\
+             if(between(in_time,{ramp_in_end:.4},{ramp_out_start:.4}),{s:.4},\
+             if(between(in_time,{ramp_out_start:.4},{ze:.4}),{ramp_out_scale},\
              {scale_expr})))"
         );
     }
 
-    // Now build crop expressions using the composite scale factor.
-    // For each effect, we also need the focus point (x, y) — we take the
-    // active effect's focus point via nested conditionals.
+    // Focus point expressions (cx, cy in 0-1 range).
     // If an effect has `positions` (keyframed mouse path), generate piecewise
-    // linear interpolation expressions instead of a static value.
+    // smoothstep interpolation expressions instead of a static value.
     let mut cx_expr = "0.5".to_string();
     let mut cy_expr = "0.5".to_string();
 
@@ -256,7 +260,8 @@ fn build_zoom_crop_chain(
             .get("positions")
             .and_then(|v| v.as_array())
             .map(|arr| {
-                // Downsample to ~10Hz (every 100ms) for smooth mouse-following
+                // Positions are already EMA-smoothed by the recorder.
+                // Keep at ~5 Hz (200 ms) — smoothstep interpolation fills gaps.
                 let mut result = Vec::new();
                 let mut last_t: Option<f64> = None;
                 for item in arr {
@@ -264,7 +269,7 @@ fn build_zoom_crop_chain(
                     let px = item.get("x").and_then(|v| v.as_f64()).unwrap_or(50.0) / 100.0;
                     let py = item.get("y").and_then(|v| v.as_f64()).unwrap_or(50.0) / 100.0;
                     if let Some(prev) = last_t {
-                        if t - prev < 0.1 && !result.is_empty() {
+                        if t - prev < 0.2 && !result.is_empty() {
                             continue;
                         }
                     }
@@ -292,10 +297,10 @@ fn build_zoom_crop_chain(
                     continue;
                 }
                 // p = normalized progress [0,1] within this segment
-                let p_expr = format!("(t-{abs_a:.4})/{dt:.4}");
+                let p_expr = format!("(in_time-{abs_a:.4})/{dt:.4}");
                 // smoothstep: 3p²-2p³
                 let smooth = format!(
-                    "(3*pow({p}\\,2)-2*pow({p}\\,3))",
+                    "(3*pow({p},2)-2*pow({p},3))",
                     p = p_expr,
                 );
                 // smoothed lerp: a + (b - a) * smoothstep(p)
@@ -308,32 +313,35 @@ fn build_zoom_crop_chain(
                     dy = y_b - y_a,
                 );
                 local_cx = format!(
-                    "if(between(t\\,{abs_a:.4}\\,{abs_b:.4})\\,{cx_lerp}\\,{local_cx})"
+                    "if(between(in_time,{abs_a:.4},{abs_b:.4}),{cx_lerp},{local_cx})"
                 );
                 local_cy = format!(
-                    "if(between(t\\,{abs_a:.4}\\,{abs_b:.4})\\,{cy_lerp}\\,{local_cy})"
+                    "if(between(in_time,{abs_a:.4},{abs_b:.4}),{cy_lerp},{local_cy})"
                 );
             }
 
-            cx_expr = format!("if(between(t\\,{zs:.4}\\,{ze:.4})\\,{local_cx}\\,{cx_expr})");
-            cy_expr = format!("if(between(t\\,{zs:.4}\\,{ze:.4})\\,{local_cy}\\,{cy_expr})");
+            cx_expr = format!("if(between(in_time,{zs:.4},{ze:.4}),{local_cx},{cx_expr})");
+            cy_expr = format!("if(between(in_time,{zs:.4},{ze:.4}),{local_cy},{cy_expr})");
         } else {
-            cx_expr = format!("if(between(t\\,{zs:.4}\\,{ze:.4})\\,{cx:.4}\\,{cx_expr})");
-            cy_expr = format!("if(between(t\\,{zs:.4}\\,{ze:.4})\\,{cy:.4}\\,{cy_expr})");
+            cx_expr = format!("if(between(in_time,{zs:.4},{ze:.4}),{cx:.4},{cx_expr})");
+            cy_expr = format!("if(between(in_time,{zs:.4},{ze:.4}),{cy:.4},{cy_expr})");
         }
     }
 
-    // Crop width/height = iw/scale, ih/scale
-    // Crop x = (iw - iw/scale) * cx
-    // Crop y = (ih - ih/scale) * cy
-    let sf = &scale_expr;
-    let w_expr = format!("iw/({sf})");
-    let h_expr = format!("ih/({sf})");
-    let x_expr = format!("(iw-iw/({sf}))*({cx_expr})");
-    let y_expr = format!("(ih-ih/({sf}))*({cy_expr})");
+    // Use zoompan instead of crop+scale.
+    // zoompan evaluates z, x, y per-frame (unlike crop which evaluates w/h once).
+    // - z: zoom factor (1 = no zoom, 2 = 2x zoom)
+    // - x: top-left x of visible area = (iw - iw/zoom) * cx
+    // - y: top-left y of visible area = (ih - ih/zoom) * cy
+    //   (`zoom` refers to the z value just computed for this frame)
+    // - d=1: each input frame → 1 output frame (real-time, not Ken Burns)
+    // - s: output resolution
+    // - fps: match input video fps to avoid frame drops or duplication
+    let x_expr = format!("(iw-iw/zoom)*({cx_expr})");
+    let y_expr = format!("(ih-ih/zoom)*({cy_expr})");
 
     format!(
-        "crop=w='{w_expr}':h='{h_expr}':x='{x_expr}':y='{y_expr}',scale={out_w}:{out_h}"
+        "zoompan=z='{scale_expr}':x='{x_expr}':y='{y_expr}':d=1:s={out_w}x{out_h}:fps={fps_int}"
     )
 }
 
@@ -567,7 +575,8 @@ pub fn build_export_filter_complex(project: &ProjectData) -> ExportGraph {
             }
         }
 
-        let zoom_filter = build_zoom_crop_chain(&zoom_effects, proj_w, proj_h);
+        let fps = if project.frame_rate > 0.0 { project.frame_rate } else { 30.0 };
+        let zoom_filter = build_zoom_crop_chain(&zoom_effects, proj_w, proj_h, fps);
 
         let al = format!("a{label_counter}");
 

@@ -59,6 +59,36 @@ pub fn start_export(
 
     eprintln!("[export] Filter complex:\n{}", graph.filter_complex);
 
+    // Write filter complex to a debug file next to the output for inspection
+    if let Some(parent) = std::path::Path::new(&config.output_path).parent() {
+        let debug_path = parent.join("_last_export_filter.txt");
+        let mut debug = String::new();
+        debug.push_str(&format!("Output: {}\n", config.output_path));
+        debug.push_str(&format!("Tracks: {}\n", config.project.tracks.len()));
+        for t in &config.project.tracks {
+            debug.push_str(&format!(
+                "  track type='{}' clips={} muted={}\n",
+                t.track_type, t.clips.len(), t.muted,
+            ));
+            for c in &t.clips {
+                debug.push_str(&format!(
+                    "    clip asset='{}' pos={}ms src={}..{}ms effects={}\n",
+                    c.asset_id, c.track_position, c.source_start, c.source_end, c.effects.len(),
+                ));
+                for e in &c.effects {
+                    debug.push_str(&format!(
+                        "      effect type='{}' start={}ms dur={}ms params={:?}\n",
+                        e.effect_type, e.start_time, e.duration,
+                        e.params.keys().collect::<Vec<_>>(),
+                    ));
+                }
+            }
+        }
+        debug.push_str(&format!("\nFilter complex:\n{}\n", graph.filter_complex));
+        std::fs::write(&debug_path, &debug).ok();
+        eprintln!("[export] Debug written to {}", debug_path.display());
+    }
+
     // Assemble FFmpeg arguments
     let mut args: Vec<String> = vec!["-y".into()];
 
@@ -248,11 +278,21 @@ fn run_export(
         return Err("Export cancelled".to_string());
     }
 
+    // Always capture stderr for debugging
+    if let Some(mut stderr) = child.stderr.take() {
+        let mut buf = String::new();
+        use std::io::Read;
+        stderr.read_to_string(&mut buf).ok();
+        if !buf.is_empty() {
+            eprintln!("[export] FFmpeg stderr (last 2000 chars):\n{}", &buf[buf.len().saturating_sub(2000)..]);
+        }
+    }
+
     if !status.success() {
-        if let Some(mut stderr) = child.stderr.take() {
+        if let Some(mut stderr_2) = child.stderr.take() {
             let mut buf = String::new();
             use std::io::Read;
-            stderr.read_to_string(&mut buf).ok();
+            stderr_2.read_to_string(&mut buf).ok();
             return Err(format!("FFmpeg exited with {status}: {buf}"));
         }
         return Err(format!("FFmpeg exited with {status}"));

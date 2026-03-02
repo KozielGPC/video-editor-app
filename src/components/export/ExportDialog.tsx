@@ -334,6 +334,7 @@ export default function ExportDialog() {
         audio_bitrate: audioBitrate,
         fps: project.frameRate ?? 30,
       };
+      useUIStore.getState().setExportOutputPath(outputPath);
       await invoke("start_export", { config });
       setOpen(false);
       setShowProgress(true);

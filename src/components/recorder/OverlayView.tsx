@@ -3,6 +3,7 @@ import { listen, emit } from "@tauri-apps/api/event";
 
 interface OverlayPayload {
   recordingState: "idle" | "recording" | "paused";
+  isZoomed?: boolean;
 }
 
 export default function OverlayView() {
@@ -41,12 +42,15 @@ export default function OverlayView() {
 
   return (
     <div className="fixed inset-0 pointer-events-none z-[9999]">
-      {/* Full-frame dotted border (gray) */}
+      {/* Full-frame border — highlights when zoom is active */}
       <div
         className="absolute inset-0"
         style={{
-          border: "2px dashed rgba(128, 128, 128, 0.7)",
+          border: payload.isZoomed
+            ? "3px solid rgba(59, 130, 246, 0.9)"
+            : "2px dashed rgba(128, 128, 128, 0.7)",
           borderRadius: "2px",
+          transition: "border 200ms ease",
         }}
       />
 
