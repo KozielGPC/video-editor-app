@@ -16,6 +16,8 @@ pub struct RecordingManager {
     pub audio: Option<audio_capture::AudioCapture>,
     pub mouse_tracker: Option<mouse_tracker::MouseTracker>,
     pub output_path: Option<String>,
+    /// Project directory for organized folder output (e.g. Recording_YYYYMMDD_HHMMSS/)
+    pub project_dir: Option<String>,
     pub zoom_markers: Vec<ZoomMarker>,
     pub recording_start: Option<Instant>,
     pub is_zoomed_in: bool,
@@ -35,6 +37,7 @@ impl RecordingManager {
             audio: None,
             mouse_tracker: None,
             output_path: None,
+            project_dir: None,
             zoom_markers: Vec::new(),
             recording_start: None,
             is_zoomed_in: false,
@@ -65,7 +68,12 @@ impl RecordingManager {
         // Start cpal audio capture if a mic is selected
         let has_mic = mic_idx.is_some() && mic_idx != Some("none");
         if has_mic {
-            let wav_path = format!("{}.audio.wav", config.output_path);
+            // Write audio into media/ directory if project_dir is set
+            let wav_path = if let Some(ref pd) = self.project_dir {
+                format!("{pd}/media/audio.wav")
+            } else {
+                format!("{}.audio.wav", config.output_path)
+            };
             match audio_capture::AudioCapture::start(mic_idx.unwrap(), &wav_path) {
                 Ok(capture) => {
                     self.audio = Some(capture);
@@ -193,7 +201,13 @@ impl RecordingManager {
                     .collect();
             }
 
-            if let Some(ref out) = self.output_path {
+            // Save sidecar files into project_dir if available, else next to recording
+            if let Some(ref pd) = self.project_dir {
+                let mouse_path = format!("{pd}/mouse.json");
+                tracker.save_to_file(&mouse_path).ok();
+                let clicks_path = format!("{pd}/clicks.json");
+                tracker.save_clicks_to_file(&clicks_path).ok();
+            } else if let Some(ref out) = self.output_path {
                 let mouse_path = format!("{}.mouse.json", out);
                 tracker.save_to_file(&mouse_path).ok();
                 let clicks_path = format!("{}.clicks.json", out);
@@ -209,8 +223,12 @@ impl RecordingManager {
             .cloned()
             .collect();
         if !complete.is_empty() {
-            if let Some(ref out) = self.output_path {
-                let zoom_path = format!("{}.zoom.json", out);
+            let zoom_path = if let Some(ref pd) = self.project_dir {
+                Some(format!("{pd}/zoom.json"))
+            } else {
+                self.output_path.as_ref().map(|out| format!("{out}.zoom.json"))
+            };
+            if let Some(zoom_path) = zoom_path {
                 if let Ok(json) = serde_json::to_string_pretty(&complete) {
                     std::fs::write(&zoom_path, json).ok();
                 }
@@ -219,6 +237,7 @@ impl RecordingManager {
 
         self.recording_start = None;
         self.state = RecordingState::Idle;
+        self.project_dir = None;
         let path = self.output_path.take().unwrap_or_default();
         Ok(path)
     }

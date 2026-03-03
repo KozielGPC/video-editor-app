@@ -12,14 +12,64 @@ pub fn create_project(
     ))
 }
 
+/// Save project to disk. If `project_dir` is provided, converts absolute asset
+/// paths to relative (relative to project_dir) before writing.
 #[tauri::command]
-pub fn save_project(project: ProjectData, path: String) -> Result<(), String> {
-    crate::editor::project::save_project_to_file(&project, &path)
+pub fn save_project(
+    project: ProjectData,
+    path: String,
+    project_dir: Option<String>,
+) -> Result<(), String> {
+    let mut proj = project;
+    // Convert absolute paths to relative if project_dir is provided
+    if let Some(ref pd) = project_dir {
+        let pd_prefix = if pd.ends_with('/') {
+            pd.clone()
+        } else {
+            format!("{pd}/")
+        };
+        for asset in &mut proj.assets {
+            if asset.path.starts_with(&pd_prefix) {
+                asset.path = asset.path[pd_prefix.len()..].to_string();
+            }
+        }
+        // Also make camera overlay path relative
+        if let Some(ref mut cam) = proj.camera_overlay {
+            if cam.path.starts_with(&pd_prefix) {
+                cam.path = cam.path[pd_prefix.len()..].to_string();
+            }
+        }
+    }
+    crate::editor::project::save_project_to_file(&proj, &path)
 }
 
+/// Load project from disk. If `project_dir` is provided, resolves relative asset
+/// paths to absolute by prepending project_dir.
 #[tauri::command]
-pub fn load_project(path: String) -> Result<ProjectData, String> {
-    crate::editor::project::load_project_from_file(&path)
+pub fn load_project(path: String, project_dir: Option<String>) -> Result<ProjectData, String> {
+    let mut proj = crate::editor::project::load_project_from_file(&path)?;
+    // Convert relative paths to absolute if project_dir is provided and version >= 1
+    if let Some(ref pd) = project_dir {
+        if proj.version >= 1 {
+            let pd_prefix = if pd.ends_with('/') {
+                pd.clone()
+            } else {
+                format!("{pd}/")
+            };
+            for asset in &mut proj.assets {
+                if !asset.path.starts_with('/') {
+                    asset.path = format!("{pd_prefix}{}", asset.path);
+                }
+            }
+            // Also resolve camera overlay path
+            if let Some(ref mut cam) = proj.camera_overlay {
+                if !cam.path.starts_with('/') {
+                    cam.path = format!("{pd_prefix}{}", cam.path);
+                }
+            }
+        }
+    }
+    Ok(proj)
 }
 
 #[tauri::command]
@@ -86,6 +136,8 @@ pub fn remove_silence(
 ///
 /// Loads click data from the `.clicks.json` sidecar file, runs the
 /// density-based clustering algorithm, and returns zoom markers.
+/// Supports both project-dir layout (clicks.json in parent's parent)
+/// and legacy layout ({path}.clicks.json).
 #[tauri::command]
 pub fn generate_auto_zoom(
     recording_path: String,
@@ -93,7 +145,23 @@ pub fn generate_auto_zoom(
     screen_width: f64,
     screen_height: f64,
 ) -> Result<Vec<ZoomMarker>, String> {
-    let clicks_path = format!("{}.clicks.json", recording_path);
+    // Try project-dir layout first: Recording_xxx/media/screen.mp4 -> Recording_xxx/clicks.json
+    let project_dir_path = std::path::Path::new(&recording_path)
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|p| p.join("clicks.json"));
+    let legacy_path = format!("{}.clicks.json", recording_path);
+
+    let clicks_path = if let Some(ref pd) = project_dir_path {
+        if pd.exists() {
+            pd.to_string_lossy().to_string()
+        } else {
+            legacy_path
+        }
+    } else {
+        legacy_path
+    };
+
     let clicks = crate::recording::mouse_tracker::MouseTracker::load_clicks_from_file(&clicks_path)
         .map_err(|e| format!("Failed to load click data: {e}"))?;
 

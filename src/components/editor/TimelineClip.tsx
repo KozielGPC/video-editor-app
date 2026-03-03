@@ -3,6 +3,7 @@ import * as ContextMenu from "@radix-ui/react-context-menu";
 import { useEditorStore } from "@/stores/editorStore";
 import type { Clip, Track } from "@/types/project";
 import { ZOOM_ASSET_ID } from "@/types/project";
+import { streamUrl } from "@/lib/stream";
 import Waveform from "./Waveform";
 
 interface TimelineClipProps {
@@ -182,12 +183,15 @@ function TimelineClip({
             </span>
 
             {/* Audio waveform */}
-            {track.type === "audio" && asset && width > 50 && (
+            {track.type === "audio" && asset && width > 30 && (
               <div className="flex-1 min-h-0 mt-0.5">
                 <Waveform
-                  audioUrl={asset.path}
-                  height={28}
+                  audioUrl={streamUrl(asset.path)}
+                  height={36}
                   width={Math.max(Math.round(width) - 16, 24)}
+                  sourceStart={clip.sourceStart}
+                  sourceEnd={clip.sourceEnd}
+                  totalDuration={asset.duration}
                 />
               </div>
             )}

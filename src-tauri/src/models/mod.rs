@@ -188,6 +188,21 @@ pub struct AutoZoomConfig {
 // Project / Editor types
 // ---------------------------------------------------------------------------
 
+/// Asset metadata stored in the project file.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct AssetData {
+    pub id: String,
+    pub name: String,
+    /// Path relative to project directory (or absolute for legacy projects)
+    pub path: String,
+    pub asset_type: String, // "video" | "audio" | "image"
+    pub duration_ms: u64,
+    #[serde(default)]
+    pub width: u32,
+    #[serde(default)]
+    pub height: u32,
+}
+
 /// Camera overlay for zoom-aware export (zoom only affects screen, not camera)
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct CameraOverlayData {
@@ -224,9 +239,12 @@ pub struct ProjectData {
     pub resolution: (u32, u32),
     pub frame_rate: f64,
     pub tracks: Vec<TrackData>,
-    pub assets: Vec<String>,
+    pub assets: Vec<AssetData>,
     #[serde(default)]
     pub camera_overlay: Option<CameraOverlayData>,
+    /// Project file format version (for future migrations)
+    #[serde(default)]
+    pub version: u32,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

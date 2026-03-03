@@ -31,7 +31,7 @@ function MicSelector() {
       disabled={isDisabled}
     >
       <Select.Trigger
-        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-neutral-800 border border-neutral-700 text-xs text-neutral-300 cursor-pointer hover:bg-neutral-700 hover:border-neutral-600 focus:outline-none focus:ring-2 focus:ring-blue-500/40 disabled:opacity-40 disabled:cursor-not-allowed transition-all duration-150 max-w-[180px]"
+        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-neutral-800 border border-neutral-700 text-xs text-neutral-300 cursor-pointer hover:bg-neutral-700 hover:border-neutral-600 focus:outline-none focus:ring-2 focus:ring-blue-500/40 disabled:opacity-40 disabled:cursor-not-allowed transition-all duration-150 max-w-[200px]"
       >
         <span className="shrink-0 text-neutral-400">
           {hasMic ? <Mic size={13} /> : <MicOff size={13} />}
@@ -197,16 +197,61 @@ export default function RecordingControls() {
   }, [resumeRecording]);
 
   return (
-    <div className="relative flex items-center justify-center gap-5 py-4">
-      {/* Mic selector — always visible on the left */}
-      <div className="absolute left-4 top-1/2 -translate-y-1/2">
-        <MicSelector />
+    <div className="flex flex-col items-center justify-center gap-2 h-full py-2">
+      {/* Mic selector */}
+      <MicSelector />
+
+      {/* Record / Stop button + Pause */}
+      <div className="flex items-center gap-3">
+        {isIdle ? (
+          <button
+            onClick={handleStart}
+            disabled={!hasRecordableSources}
+            title={
+              hasRecordableSources
+                ? "Start Recording (⌘⇧R)"
+                : "Add sources to scene first"
+            }
+            className="relative flex items-center justify-center w-14 h-14 rounded-full bg-red-500 hover:bg-red-400 active:bg-red-600 shadow-lg shadow-red-500/30 hover:shadow-red-400/40 transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none group"
+          >
+            <span className="w-5 h-5 rounded-full bg-white/90 group-hover:scale-110 transition-transform" />
+          </button>
+        ) : isProcessing ? (
+          <div className="flex items-center justify-center w-14 h-14 rounded-full bg-neutral-800 border-2 border-blue-500 opacity-60">
+            <div className="w-5 h-5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+          </div>
+        ) : (
+          <button
+            onClick={handleStop}
+            title="Stop Recording (⌘⇧R)"
+            className="flex items-center justify-center w-14 h-14 rounded-full bg-neutral-800 border-2 border-red-500 hover:bg-neutral-700 active:bg-neutral-600 shadow-lg transition-all duration-200"
+          >
+            <Square size={20} className="text-red-500" fill="currentColor" />
+          </button>
+        )}
+
+        {!isIdle && !isProcessing && (
+          <button
+            onClick={isPaused ? handleResume : handlePause}
+            title={`${isPaused ? "Resume" : "Pause"} (⌘⇧P)`}
+            className="flex items-center justify-center w-10 h-10 rounded-full bg-neutral-800 border border-neutral-700 hover:bg-neutral-700 hover:border-neutral-600 active:bg-neutral-600 transition-all duration-200"
+          >
+            {isPaused ? (
+              <Play size={16} className="text-neutral-200 ml-0.5" />
+            ) : (
+              <Pause size={16} className="text-neutral-200" />
+            )}
+          </button>
+        )}
+
+        {isRecording && <ZoomToggleButton />}
       </div>
 
-      {!isIdle && (
-        <div className="flex items-center gap-2 mr-4">
+      {/* Timer / Status */}
+      {!isIdle ? (
+        <div className="flex items-center gap-2">
           <span
-            className={`inline-block w-2.5 h-2.5 rounded-full ${
+            className={`inline-block w-2 h-2 rounded-full ${
               isProcessing
                 ? "bg-blue-500 animate-pulse"
                 : isRecording
@@ -214,92 +259,18 @@ export default function RecordingControls() {
                 : "bg-yellow-500"
             }`}
           />
-          <span className="font-mono text-lg tabular-nums text-neutral-100">
+          <span className="font-mono text-sm tabular-nums text-neutral-100">
             {isProcessing ? "Processing..." : formatTime(elapsedTime)}
           </span>
         </div>
-      )}
-
-      {isIdle ? (
-        <button
-          onClick={handleStart}
-          disabled={!hasRecordableSources}
-          title={
-            hasRecordableSources
-              ? "Start Recording (⌘⇧R)"
-              : "Add sources to scene first"
-          }
-          className="relative flex items-center justify-center w-16 h-16 rounded-full bg-red-500 hover:bg-red-400 active:bg-red-600 shadow-lg shadow-red-500/30 hover:shadow-red-400/40 transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none group"
-        >
-          <span className="w-6 h-6 rounded-full bg-white/90 group-hover:scale-110 transition-transform" />
-        </button>
-      ) : isProcessing ? (
-        <div className="flex items-center justify-center w-16 h-16 rounded-full bg-neutral-800 border-2 border-blue-500 opacity-60">
-          <div className="w-5 h-5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
-        </div>
       ) : (
-        <button
-          onClick={handleStop}
-          title="Stop Recording (⌘⇧R)"
-          className="flex items-center justify-center w-16 h-16 rounded-full bg-neutral-800 border-2 border-red-500 hover:bg-neutral-700 active:bg-neutral-600 shadow-lg transition-all duration-200"
-        >
-          <Square size={22} className="text-red-500" fill="currentColor" />
-        </button>
-      )}
-
-      {!isIdle && !isProcessing && (
-        <button
-          onClick={isPaused ? handleResume : handlePause}
-          title={`${isPaused ? "Resume" : "Pause"} (⌘⇧P)`}
-          className="flex items-center justify-center w-12 h-12 rounded-full bg-neutral-800 border border-neutral-700 hover:bg-neutral-700 hover:border-neutral-600 active:bg-neutral-600 transition-all duration-200"
-        >
-          {isPaused ? (
-            <Play size={18} className="text-neutral-200 ml-0.5" />
-          ) : (
-            <Pause size={18} className="text-neutral-200" />
-          )}
-        </button>
-      )}
-
-      {isRecording && <ZoomToggleButton />}
-
-      {isIdle && (
-        <div className="flex flex-col text-xs text-neutral-500 ml-4 gap-0.5">
+        <div className="text-[10px] text-neutral-500 text-center">
           {!hasRecordableSources ? (
-            <span className="text-yellow-500">
-              Add sources to the scene to record
-            </span>
+            <span className="text-yellow-500">Add sources first</span>
           ) : (
-            <>
-              <span className="text-neutral-400 mb-1">
-                {sourceCount} source{sourceCount !== 1 ? "s" : ""} ready
-                {hasScreen && hasCamera
-                  ? " (screen + camera)"
-                  : hasScreen
-                  ? " (screen)"
-                  : hasCamera
-                  ? " (camera)"
-                  : ""}
-              </span>
-              <span>
-                <kbd className="px-1.5 py-0.5 rounded bg-neutral-800 border border-neutral-700 text-neutral-400 text-[10px] font-mono">
-                  ⌘⇧R
-                </kbd>{" "}
-                Record
-              </span>
-              <span>
-                <kbd className="px-1.5 py-0.5 rounded bg-neutral-800 border border-neutral-700 text-neutral-400 text-[10px] font-mono">
-                  ⌘⇧P
-                </kbd>{" "}
-                Pause
-              </span>
-              <span>
-                <kbd className="px-1.5 py-0.5 rounded bg-neutral-800 border border-neutral-700 text-neutral-400 text-[10px] font-mono">
-                  ⌘⇧Z
-                </kbd>{" "}
-                Zoom at cursor
-              </span>
-            </>
+            <span>
+              <kbd className="px-1 py-0.5 rounded bg-neutral-800 border border-neutral-700 text-neutral-400 font-mono">⌘⇧R</kbd> Record
+            </span>
           )}
         </div>
       )}

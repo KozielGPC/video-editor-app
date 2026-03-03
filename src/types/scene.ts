@@ -42,7 +42,7 @@ export type ResizeHandle =
   | "left";
 
 /** Canvas aspect ratio presets */
-export type AspectRatioPreset = "16:9" | "9:16" | "4:3" | "1:1" | "custom";
+export type AspectRatioPreset = "16:9" | "9:16" | "4:3" | "1:1" | "4:5" | "custom";
 
 export interface CanvasSettings {
   aspectRatio: AspectRatioPreset;

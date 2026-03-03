@@ -11,9 +11,11 @@ import {
   Redo2,
   Plus,
   Download,
+  Save,
 } from "lucide-react";
 import { useEditorStore, type Tool } from "@/stores/editorStore";
 import { useUIStore } from "@/stores/uiStore";
+import { probeMedia } from "@/lib/ffmpeg";
 
 // ─── Tool definitions ────────────────────────────────────────────────────────
 
@@ -41,6 +43,9 @@ function Toolbar() {
     selectedTrackId,
     undo,
     redo,
+    isDirty,
+    projectDir,
+    saveProject,
   } = useEditorStore();
 
   const handleDelete = () => {
@@ -50,24 +55,84 @@ function Toolbar() {
   };
 
   const handleImport = async () => {
+    const { project, createProjectFromRecording } = useEditorStore.getState();
     try {
       const { open } = await import("@tauri-apps/plugin-dialog");
       const result = await open({
-        multiple: true,
+        multiple: false,
         filters: [
           {
             name: "Media",
             extensions: [
-              "mp4", "mov", "avi", "mkv", "webm",
+              "mp4", "mov", "avi", "mkv", "webm", "m4v",
               "mp3", "wav", "aac", "flac", "ogg",
-              "png", "jpg", "jpeg", "gif", "webp",
             ],
           },
         ],
       });
-      if (result) {
-        console.log("Imported files:", result);
-        // TODO: process imported files and add as assets
+      if (!result) return;
+      const filePath = typeof result === "string" ? result : result;
+      const mediaInfo = await probeMedia(filePath);
+      const durationSec = mediaInfo.duration_ms / 1000;
+
+      if (!project) {
+        // No project open — create one from the imported file
+        createProjectFromRecording(filePath, durationSec);
+      } else {
+        // Project exists — add file as a new asset and clip
+        const { v4: uuidv4 } = await import("uuid");
+        const { addClip, _pushHistory } = useEditorStore.getState();
+        const currentProject = useEditorStore.getState().project;
+        if (!currentProject) return;
+
+        _pushHistory();
+
+        const assetId = uuidv4();
+        const fileName = filePath.split("/").pop() ?? "Imported";
+        const isAudio = ["mp3", "wav", "aac", "flac", "ogg"].some((ext) =>
+          filePath.toLowerCase().endsWith(`.${ext}`),
+        );
+
+        const newAsset = {
+          id: assetId,
+          name: fileName,
+          path: filePath,
+          type: (isAudio ? "audio" : "video") as "video" | "audio",
+          duration: durationSec,
+          width: mediaInfo.width,
+          height: mediaInfo.height,
+        };
+
+        // Find the appropriate track
+        const trackType = isAudio ? "audio" : "video";
+        const track = currentProject.tracks.find((t) => t.type === trackType);
+        if (!track) return;
+
+        // Place clip at the end of existing clips
+        const trackEnd = track.clips.reduce((max, c) => {
+          const end = c.trackPosition + (c.sourceEnd - c.sourceStart);
+          return Math.max(max, end);
+        }, 0);
+
+        const newClip = {
+          id: uuidv4(),
+          assetId,
+          trackPosition: trackEnd,
+          sourceStart: 0,
+          sourceEnd: durationSec,
+          volume: 1,
+          effects: [],
+          overlays: [],
+        };
+
+        // Update project with new asset and add clip
+        useEditorStore.setState({
+          project: {
+            ...currentProject,
+            assets: [...currentProject.assets, newAsset],
+          },
+        });
+        addClip(track.id, newClip);
       }
     } catch (err) {
       console.error("Import failed:", err);
@@ -115,6 +180,19 @@ function Toolbar() {
         <ToolBtn icon={Plus} tooltip="Import Media" onClick={handleImport} />
 
         <Sep />
+
+        {/* ── Save ───────────────────────────────────────────────── */}
+        <div className="relative">
+          <ToolBtn
+            icon={Save}
+            tooltip={`Save Project (${"\u2318"}S)`}
+            onClick={() => saveProject()}
+            disabled={!projectDir}
+          />
+          {isDirty && projectDir && (
+            <div className="absolute top-0.5 right-0.5 w-2 h-2 rounded-full bg-orange-400" />
+          )}
+        </div>
 
         {/* ── Export ─────────────────────────────────────────────── */}
         <ToolBtn

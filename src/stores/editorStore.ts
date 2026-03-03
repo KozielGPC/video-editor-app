@@ -1,9 +1,11 @@
 import { create } from "zustand";
 import { v4 as uuidv4 } from "uuid";
+import { invoke } from "@tauri-apps/api/core";
 import type { Project, Track, Clip, Effect, Overlay, Asset, CameraOverlayInfo } from "@/types/project";
 import { ZOOM_ASSET_ID } from "@/types/project";
 import type { Segment } from "@/lib/ffmpeg";
 import { getPresetById } from "@/lib/scenePresets";
+import { makeRelativePath, resolveAssetPath } from "@/lib/paths";
 
 // ─── Public Types ────────────────────────────────────────────────────────────
 
@@ -23,6 +25,10 @@ interface EditorState {
   timelineZoom: number; // pixels per second
   tool: Tool;
 
+  /* project persistence */
+  projectDir: string | null;
+  isDirty: boolean;
+
   /* undo / redo (internal stacks) */
   _undoStack: Project[];
   _redoStack: Project[];
@@ -36,7 +42,15 @@ interface EditorState {
     durationSec?: number,
     zoomEffects?: Effect[],
     cameraOverlay?: CameraOverlayInfo,
+    projectDir?: string,
   ) => void;
+
+  /* persistence */
+  setProjectDir: (dir: string | null) => void;
+  markDirty: () => void;
+  markClean: () => void;
+  saveProject: () => Promise<void>;
+  loadProject: (dirPath: string) => Promise<void>;
 
   /* tracks */
   addTrack: (type: Track["type"]) => void;
@@ -132,6 +146,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   isPlaying: false,
   timelineZoom: 100,
   tool: "select",
+  projectDir: null,
+  isDirty: false,
   _undoStack: [],
   _redoStack: [],
 
@@ -143,7 +159,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const snapshot = structuredClone(project);
     const stack = [..._undoStack, snapshot];
     if (stack.length > MAX_HISTORY) stack.shift();
-    set({ _undoStack: stack, _redoStack: [] });
+    set({ _undoStack: stack, _redoStack: [], isDirty: true });
   },
 
   undo: () => {
@@ -244,6 +260,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       isPlaying: false,
       _undoStack: [],
       _redoStack: [],
+      projectDir: null,
+      isDirty: false,
     });
   },
 
@@ -268,13 +286,16 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       isPlaying: false,
       _undoStack: [],
       _redoStack: [],
+      projectDir: null,
+      isDirty: false,
     });
   },
 
-  createProjectFromRecording: (filePath, durationSec = 10, zoomEffects = [], cameraOverlay) => {
+  createProjectFromRecording: (filePath, durationSec = 10, zoomEffects = [], cameraOverlay, projectDir) => {
     const assetId = uuidv4();
     const fileName = filePath.split("/").pop() ?? "Recording";
-    const projectName = fileName.replace(/\.[^.]+$/, "");
+    const dirName = projectDir?.split("/").pop();
+    const projectName = dirName ?? fileName.replace(/\.[^.]+$/, "");
 
     const asset: Asset = {
       id: assetId,
@@ -377,7 +398,261 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       isPlaying: false,
       _undoStack: [],
       _redoStack: [],
+      projectDir: projectDir ?? null,
+      isDirty: false,
     });
+  },
+
+  // ── Persistence ──────────────────────────────────────────────────────────
+
+  setProjectDir: (dir) => set({ projectDir: dir }),
+
+  markDirty: () => set({ isDirty: true }),
+
+  markClean: () => set({ isDirty: false }),
+
+  saveProject: async () => {
+    const { project, projectDir } = get();
+    if (!project || !projectDir) return;
+
+    const savePath = `${projectDir}/project.autoeditor`;
+
+    // Build Rust-compatible project data with AssetData
+    const rustAssets = project.assets.map((a) => ({
+      id: a.id,
+      name: a.name,
+      path: a.path,
+      asset_type: a.type,
+      duration_ms: Math.round(a.duration * 1000),
+      width: a.width ?? 0,
+      height: a.height ?? 0,
+    }));
+
+    const rustTracks = project.tracks.map((track) => ({
+      id: track.id,
+      track_type: track.type,
+      clips: track.clips.map((clip) => ({
+        id: clip.id,
+        asset_id: clip.assetId,
+        track_position: Math.round(clip.trackPosition * 1000),
+        source_start: Math.round(clip.sourceStart * 1000),
+        source_end: Math.round(clip.sourceEnd * 1000),
+        volume: clip.volume,
+        effects: clip.effects.map((e) => ({
+          effect_type: e.type,
+          start_time: Math.round(e.startTime * 1000),
+          duration: Math.round(e.duration * 1000),
+          params: e.params,
+        })),
+        overlays: clip.overlays.map((o) => ({
+          overlay_type: o.type,
+          x: o.position.x,
+          y: o.position.y,
+          width: o.size.width,
+          height: o.size.height,
+          content: o.content,
+          start_time: Math.round(o.startTime * 1000),
+          duration: Math.round(o.duration * 1000),
+        })),
+      })),
+      muted: track.muted,
+      locked: track.locked,
+    }));
+
+    const cam = project.cameraOverlay;
+    const cameraOverlay = cam
+      ? {
+          path: cam.path,
+          sync_offset: cam.syncOffset,
+          x: cam.x,
+          y: cam.y,
+          width: cam.width,
+          height: cam.height,
+          shape: cam.shape,
+          border_radius: cam.borderRadius,
+          border_width: cam.borderWidth,
+          border_color: cam.borderColor,
+          shadow: cam.shadow,
+          crop_x: cam.cropX,
+          crop_y: cam.cropY,
+          crop_width: cam.cropWidth,
+          crop_height: cam.cropHeight,
+        }
+      : undefined;
+
+    const rustProject = {
+      id: project.id,
+      name: project.name,
+      resolution: [project.resolution.width, project.resolution.height] as [number, number],
+      frame_rate: project.frameRate,
+      tracks: rustTracks,
+      assets: rustAssets,
+      camera_overlay: cameraOverlay,
+      version: 1,
+    };
+
+    try {
+      await invoke("save_project", {
+        project: rustProject,
+        path: savePath,
+        projectDir,
+      });
+      set({ isDirty: false });
+      console.debug("[editor] Project saved to", savePath);
+    } catch (err) {
+      console.error("Failed to save project:", err);
+    }
+  },
+
+  loadProject: async (dirPath: string) => {
+    const projectFile = `${dirPath}/project.autoeditor`;
+
+    try {
+      const rustProject = await invoke<{
+        id: string;
+        name: string;
+        resolution: [number, number];
+        frame_rate: number;
+        tracks: Array<{
+          id: string;
+          track_type: string;
+          clips: Array<{
+            id: string;
+            asset_id: string;
+            track_position: number;
+            source_start: number;
+            source_end: number;
+            volume: number;
+            effects: Array<{
+              effect_type: string;
+              start_time: number;
+              duration: number;
+              params: Record<string, unknown>;
+            }>;
+            overlays: Array<{
+              overlay_type: string;
+              x: number;
+              y: number;
+              width: number;
+              height: number;
+              content: string;
+              start_time: number;
+              duration: number;
+            }>;
+          }>;
+          muted: boolean;
+          locked: boolean;
+        }>;
+        assets: Array<{
+          id: string;
+          name: string;
+          path: string;
+          asset_type: string;
+          duration_ms: number;
+          width: number;
+          height: number;
+        }>;
+        camera_overlay?: {
+          path: string;
+          sync_offset: number;
+          x: number;
+          y: number;
+          width: number;
+          height: number;
+          shape?: string;
+          border_radius?: number;
+          border_width?: number;
+          border_color?: string;
+          shadow?: boolean;
+          crop_x?: number;
+          crop_y?: number;
+          crop_width?: number;
+          crop_height?: number;
+        };
+        version: number;
+      }>("load_project", { path: projectFile, projectDir: dirPath });
+
+      // Convert Rust types back to frontend types
+      const assets: Asset[] = rustProject.assets.map((a) => ({
+        id: a.id,
+        name: a.name,
+        path: a.path,
+        type: a.asset_type as "video" | "audio" | "image",
+        duration: a.duration_ms / 1000,
+        width: a.width,
+        height: a.height,
+      }));
+
+      const tracks: Track[] = rustProject.tracks.map((t) => ({
+        id: t.id,
+        type: t.track_type as Track["type"],
+        clips: t.clips.map((c) => ({
+          id: c.id,
+          assetId: c.asset_id,
+          trackPosition: c.track_position / 1000,
+          sourceStart: c.source_start / 1000,
+          sourceEnd: c.source_end / 1000,
+          volume: c.volume,
+          effects: c.effects.map((e) => ({
+            type: e.effect_type as Effect["type"],
+            startTime: e.start_time / 1000,
+            duration: e.duration / 1000,
+            params: e.params as Record<string, number | string>,
+          })),
+          overlays: c.overlays.map((o) => ({
+            type: o.overlay_type as Overlay["type"],
+            position: { x: o.x, y: o.y },
+            size: { width: o.width, height: o.height },
+            content: o.content,
+            startTime: o.start_time / 1000,
+            duration: o.duration / 1000,
+          })),
+        })),
+        muted: t.muted,
+        locked: t.locked,
+      }));
+
+      const cam = rustProject.camera_overlay;
+      const cameraOverlay: CameraOverlayInfo | undefined = cam
+        ? {
+            path: cam.path,
+            syncOffset: cam.sync_offset,
+            x: cam.x,
+            y: cam.y,
+            width: cam.width,
+            height: cam.height,
+            shape: cam.shape,
+            borderRadius: cam.border_radius,
+            borderWidth: cam.border_width,
+            borderColor: cam.border_color,
+            shadow: cam.shadow,
+            cropX: cam.crop_x,
+            cropY: cam.crop_y,
+            cropWidth: cam.crop_width,
+            cropHeight: cam.crop_height,
+          }
+        : undefined;
+
+      const project: Project = {
+        id: rustProject.id,
+        name: rustProject.name,
+        resolution: {
+          width: rustProject.resolution[0],
+          height: rustProject.resolution[1],
+        },
+        frameRate: rustProject.frame_rate,
+        tracks,
+        assets,
+        cameraOverlay,
+      };
+
+      // Use setProject which handles zoom track migration
+      get().setProject(project);
+      set({ projectDir: dirPath, isDirty: false });
+      console.debug("[editor] Project loaded from", projectFile);
+    } catch (err) {
+      console.error("Failed to load project:", err);
+    }
   },
 
   // ── Tracks ───────────────────────────────────────────────────────────────

@@ -267,18 +267,44 @@ export default function PreviewCanvas() {
   const containerRef = useRef<HTMLDivElement>(null);
   const animFrameRef = useRef(0);
 
+  /** Current zoom state — written by ZoomablePreview, read by drawFrame. */
+  const zoomRef = useRef<{ scale: number; originX: number; originY: number; isActive: boolean }>({
+    scale: 1, originX: 50, originY: 50, isActive: false,
+  });
+
   /** Return the video element for a given key. */
   const getVid = (key: "A" | "B"): HTMLVideoElement | null =>
     key === "A" ? videoRefA.current : videoRefB.current;
 
-  /** Paint a video element's current frame onto the canvas. */
+  /**
+   * Paint a video element's current frame onto the canvas.
+   * When zoom is active, crops the source frame so the canvas always
+   * renders at full resolution — no CSS upscaling artifacts.
+   */
   const drawFrame = useCallback((vidOverride?: HTMLVideoElement | null) => {
     const canvas = canvasRef.current;
     const vid = vidOverride ?? (activeElRef.current === "A" ? videoRefA.current : videoRefB.current);
     if (!canvas || !vid || vid.readyState < 2) return; // HAVE_CURRENT_DATA
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-    ctx.drawImage(vid, 0, 0, canvas.width, canvas.height);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+
+    const z = zoomRef.current;
+    if (z.isActive && z.scale > 1) {
+      // Crop: draw only the visible portion of the video at full canvas resolution
+      const vw = vid.videoWidth;
+      const vh = vid.videoHeight;
+      const visW = vw / z.scale;
+      const visH = vh / z.scale;
+      const cx = (z.originX / 100) * vw;
+      const cy = (z.originY / 100) * vh;
+      const sx = Math.max(0, Math.min(cx - visW / 2, vw - visW));
+      const sy = Math.max(0, Math.min(cy - visH / 2, vh - visH));
+      ctx.drawImage(vid, sx, sy, visW, visH, 0, 0, canvas.width, canvas.height);
+    } else {
+      ctx.drawImage(vid, 0, 0, canvas.width, canvas.height);
+    }
   }, []);
 
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
@@ -583,6 +609,7 @@ export default function PreviewCanvas() {
             videoRefB={videoRefB}
             videoSrc={videoSrc}
             isPlaying={isPlaying}
+            zoomRef={zoomRef}
           />
         ) : (
           <div className="flex flex-col items-center justify-center text-neutral-700 gap-2">
@@ -647,6 +674,7 @@ function ZoomablePreview({
   videoRefB,
   videoSrc,
   isPlaying,
+  zoomRef,
 }: {
   activeVideo: { clip: import("@/types/project").Clip; asset: import("@/types/project").Asset; sourceTime: number };
   previewDims: { width: number; height: number };
@@ -657,6 +685,7 @@ function ZoomablePreview({
   videoRefB: React.RefObject<HTMLVideoElement>;
   videoSrc: string;
   isPlaying: boolean;
+  zoomRef: React.MutableRefObject<{ scale: number; originX: number; originY: number; isActive: boolean }>;
 }) {
   const zoom = computeZoomTransform(
     activeVideo.clip.effects,
@@ -664,6 +693,9 @@ function ZoomablePreview({
     playheadPosition,
     project,
   );
+
+  // Write zoom state to the ref so drawFrame() can crop at full resolution
+  zoomRef.current = zoom;
 
   // For split layouts (camera height === 100%), constrain screen canvas width
   const cam = project.cameraOverlay;
@@ -676,25 +708,21 @@ function ZoomablePreview({
       className="relative bg-black overflow-hidden rounded-sm"
       style={{ width: previewDims.width, height: previewDims.height }}
     >
-      {/* Inner container that receives the zoom transform */}
+      {/* Inner container — zoom is now handled inside drawFrame() at full resolution */}
       <div
         className="relative h-full"
-        style={{
-          width: `${screenWidthPercent}%`,
-          transform: zoom.isActive ? `scale(${zoom.scale})` : undefined,
-          transformOrigin: zoom.isActive
-            ? `${zoom.originX}% ${zoom.originY}%`
-            : undefined,
-          transition: "transform 0.05s linear",
-        }}
+        style={{ width: `${screenWidthPercent}%` }}
       >
-        {/* Canvas — the sole visible rendering surface */}
+        {/* Canvas — the sole visible rendering surface.
+            In split layouts (screen + camera side-by-side) the container is narrower
+            than the video aspect ratio, so we use object-cover to fill the space
+            (matching the recorder's SourceOverlay behaviour). */}
         <canvas
           ref={canvasRef}
           width={project.resolution.width}
           height={project.resolution.height}
           className="w-full h-full"
-          style={{ objectFit: "contain" }}
+          style={{ objectFit: isSplitLayout ? "cover" : "contain" }}
         />
 
         {/* Hidden video decoders — never visible, used only as frame sources

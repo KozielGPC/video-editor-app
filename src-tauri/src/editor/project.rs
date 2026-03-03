@@ -29,6 +29,7 @@ pub fn create_new_project(name: &str, width: u32, height: u32, fps: f64) -> Proj
         ],
         assets: Vec::new(),
         camera_overlay: None,
+        version: 1,
     }
 }
 

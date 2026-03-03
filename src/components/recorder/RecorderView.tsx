@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useState, useRef, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useOverlayWindow } from "@/hooks/useOverlayWindow";
 import { FolderOpen, Film, X, CheckCircle2 } from "lucide-react";
@@ -7,10 +7,13 @@ import SceneBar from "@/components/recorder/SceneBar";
 import SceneCanvas from "@/components/recorder/SceneCanvas";
 import SourceList from "@/components/recorder/SourceList";
 import SourcePicker from "@/components/recorder/SourcePicker";
+import ScenePresetPicker from "@/components/editor/ScenePresetPicker";
 import { useRecorderStore } from "@/stores/recorderStore";
+import { useSceneStore, type AspectRatioPreset } from "@/stores/sceneStore";
 import { useUIStore } from "@/stores/uiStore";
 import { useEditorStore } from "@/stores/editorStore";
 import { useSourceActions } from "@/hooks/useSourceActions";
+import { useActiveScene } from "@/hooks/useActiveScene";
 import { probeMedia } from "@/lib/ffmpeg";
 import { zoomMarkersToEffects } from "@/lib/zoom";
 import type { ZoomMarker } from "@/lib/zoom";
@@ -36,12 +39,12 @@ function PostRecordingBanner() {
   const lastCameraLayout = useRecorderStore((s) => s.lastCameraLayout);
   const lastSyncOffset = useRecorderStore((s) => s.lastSyncOffset);
   const lastRecordingDuration = useRecorderStore((s) => s.elapsedTime);
+  const lastProjectDir = useRecorderStore((s) => s.lastProjectDir);
   const clearLastRecording = useRecorderStore((s) => s.clearLastRecording);
   const setActiveView = useUIStore((s) => s.setActiveView);
   const createProjectFromRecording = useEditorStore(
     (s) => s.createProjectFromRecording,
   );
-
   const fileName = lastRecordingPath?.split("/").pop() ?? "recording.mp4";
 
   const handleRevealInFinder = useCallback(async () => {
@@ -96,7 +99,16 @@ function PostRecordingBanner() {
           }
         : undefined;
 
-    createProjectFromRecording(videoPath, durationSec, zoomEffects, cameraOverlay);
+    createProjectFromRecording(videoPath, durationSec, zoomEffects, cameraOverlay, lastProjectDir ?? undefined);
+
+    // Auto-save project file if we have a project directory
+    if (lastProjectDir) {
+      // Small delay to ensure store is updated before save
+      setTimeout(() => {
+        useEditorStore.getState().saveProject();
+      }, 100);
+    }
+
     setActiveView("editor");
     clearLastRecording();
   }, [
@@ -105,6 +117,7 @@ function PostRecordingBanner() {
     lastCameraLayout,
     lastSyncOffset,
     lastRecordingDuration,
+    lastProjectDir,
     createProjectFromRecording,
     setActiveView,
     clearLastRecording,
@@ -113,7 +126,7 @@ function PostRecordingBanner() {
   if (!lastRecordingPath) return null;
 
   return (
-    <div className="shrink-0 flex items-center gap-3 p-3 rounded-xl bg-green-500/10 border border-green-500/20">
+    <div className="shrink-0 flex items-center gap-3 px-4 py-2 bg-green-500/10 border-b border-green-500/20">
       <CheckCircle2 size={20} className="text-green-400 shrink-0" />
       <div className="flex-1 min-w-0">
         <p className="text-sm font-medium text-neutral-100">
@@ -153,15 +166,65 @@ function PostRecordingBanner() {
   );
 }
 
+const BOTTOM_PANEL_MIN = 120;
+const BOTTOM_PANEL_MAX_PERCENT = 0.5;
+const BOTTOM_PANEL_DEFAULT = 176;
+
 export default function RecorderView() {
   useOverlayWindow();
 
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [bottomPanelHeight, setBottomPanelHeight] = useState(BOTTOM_PANEL_DEFAULT);
+  const [isResizing, setIsResizing] = useState(false);
+  const resizeStartY = useRef(0);
+  const resizeStartHeight = useRef(0);
   const { addSource } = useSourceActions();
+
+  // Resize handle: drag up = taller panel, drag down = shorter panel
+  const handleResizeMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsResizing(true);
+    resizeStartY.current = e.clientY;
+    resizeStartHeight.current = bottomPanelHeight;
+  }, [bottomPanelHeight]);
+
+  useEffect(() => {
+    if (!isResizing) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const deltaY = resizeStartY.current - e.clientY; // up = positive
+      const maxHeight = window.innerHeight * BOTTOM_PANEL_MAX_PERCENT;
+      const next = Math.round(
+        Math.min(maxHeight, Math.max(BOTTOM_PANEL_MIN, resizeStartHeight.current + deltaY))
+      );
+      setBottomPanelHeight(next);
+    };
+
+    const handleMouseUp = () => {
+      setIsResizing(false);
+    };
+
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "ns-resize";
+    document.addEventListener("mousemove", handleMouseMove);
+    document.addEventListener("mouseup", handleMouseUp);
+    return () => {
+      document.body.style.userSelect = "";
+      document.body.style.cursor = "";
+      document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [isResizing]);
+
+  // Scene store state for toolbar
+  const canvasSettings = useSceneStore((s) => s.canvasSettings);
+  const setAspectRatio = useSceneStore((s) => s.setAspectRatio);
+  const applyScenePreset = useSceneStore((s) => s.applyScenePreset);
+  const { sources, scene } = useActiveScene();
+  const hasCamera = sources.some((s) => s.type === "camera");
 
   const handleAddSource = useCallback(
     (source: SceneSource) => {
-      // Convert SceneSource from capture types to scene store Source
       addSource({
         type: source.type as "window" | "screen" | "camera" | "image" | "text",
         sourceId: source.sourceId,
@@ -179,35 +242,82 @@ export default function RecorderView() {
   );
 
   return (
-    <div className="flex flex-col h-full p-4 gap-4 no-select">
-      {/* Header with title and scene bar */}
-      <header className="flex flex-col gap-3">
-        <div className="flex items-center justify-between">
-          <h1 className="text-lg font-semibold text-neutral-100">Recorder</h1>
-        </div>
-        <SceneBar />
-      </header>
-
-      {/* Post-recording banner */}
+    <div className="flex flex-col h-full no-select">
+      {/* Post-recording banner (conditional) */}
       <PostRecordingBanner />
 
-      {/* Main content area */}
-      <div className="flex-1 flex flex-col gap-3 min-h-0">
-        {/* Canvas area */}
-        <div className="flex-1 min-h-0">
-          <SceneCanvas />
+      {/* Toolbar — row 1: scenes + ratio; row 2: presets (when camera) */}
+      <div className="shrink-0 flex flex-col border-b border-neutral-800 bg-neutral-900/50">
+        {/* Row 1: Scene tabs + ratio selector */}
+        <div className="flex items-center gap-3 px-3 py-2">
+          <div className="flex-1 min-w-0 overflow-x-auto">
+            <SceneBar />
+          </div>
+          <div className="h-5 w-px bg-neutral-700/50 shrink-0" />
+          <div className="flex items-center gap-1.5 shrink-0">
+            <span className="text-xs text-neutral-500">Ratio:</span>
+            <select
+              value={canvasSettings.aspectRatio}
+              onChange={(e) => setAspectRatio(e.target.value as AspectRatioPreset)}
+              className="px-2 py-1 text-xs bg-neutral-800 border border-neutral-700 rounded-lg text-neutral-300 focus:outline-none focus:border-blue-500"
+            >
+              <option value="16:9">16:9 — YouTube, Twitch</option>
+              <option value="9:16">9:16 — TikTok, Reels, Shorts</option>
+              <option value="4:5">4:5 — Instagram Portrait</option>
+              <option value="1:1">1:1 — Instagram, X</option>
+              <option value="4:3">4:3</option>
+            </select>
+          </div>
         </div>
 
-        {/* Source list panel (Streamlabs-style) */}
-        <div className="shrink-0 h-36 bg-neutral-900/60 rounded-xl border border-neutral-800 py-2">
-          <SourceList onAddSourceClick={() => setPickerOpen(true)} />
-        </div>
+        {/* Row 2: Scene presets — only when camera is present */}
+        {hasCamera && (
+          <div className="flex items-center gap-2 px-3 py-1.5 border-t border-neutral-800/80 bg-neutral-900/30">
+            <ScenePresetPicker
+              activePresetId={scene?.activePresetId ?? undefined}
+              onSelect={applyScenePreset}
+            />
+          </div>
+        )}
       </div>
 
-      {/* Recording controls bar */}
-      <footer className="shrink-0 border-t border-neutral-800 pt-2">
-        <RecordingControls />
-      </footer>
+      {/* Canvas preview — maximized */}
+      <div className="flex-1 min-h-0 p-2">
+        <SceneCanvas />
+      </div>
+
+      {/* Bottom panel — resizable via drag handle */}
+      <div
+        className="shrink-0 flex flex-col border-t border-neutral-800 bg-neutral-950"
+        style={{ height: bottomPanelHeight }}
+      >
+        {/* Drag handle — top edge */}
+        <div
+          role="separator"
+          aria-orientation="horizontal"
+          aria-valuenow={bottomPanelHeight}
+          onMouseDown={handleResizeMouseDown}
+          className={`flex items-center justify-center h-1.5 cursor-ns-resize border-b border-neutral-800 hover:bg-neutral-800/50 active:bg-neutral-700/50 transition-colors select-none ${
+            isResizing ? "bg-neutral-700/50" : ""
+          }`}
+          title="Drag to resize"
+        >
+          <div className="w-8 h-0.5 rounded-full bg-neutral-600" />
+        </div>
+
+        {/* Panel content */}
+        <div className="flex flex-1 min-h-0">
+          {/* Sources — takes remaining width */}
+          <div className="flex-1 min-w-0 border-r border-neutral-800 py-2 overflow-hidden">
+            <SourceList onAddSourceClick={() => setPickerOpen(true)} />
+          </div>
+
+          {/* Recording controls — fixed width */}
+          <div className="w-64 shrink-0">
+            <RecordingControls />
+          </div>
+        </div>
+      </div>
 
       {/* Source picker modal */}
       <SourcePicker

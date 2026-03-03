@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { devtools, persist } from "zustand/middleware";
 import { v4 as uuidv4 } from "uuid";
-import { getPresetById } from "@/lib/scenePresets";
+import { getPresetById, getPresetForRatio, inferPresetFromLayout } from "@/lib/scenePresets";
 
 /* ── Types ─────────────────────────────────────────────────────── */
 
@@ -29,9 +29,11 @@ export interface Scene {
   id: string;
   name: string;
   sources: Source[];
+  /** Last applied preset ID — used to re-apply layout when aspect ratio changes */
+  activePresetId?: string | null;
 }
 
-export type AspectRatioPreset = "16:9" | "9:16" | "4:3" | "1:1" | "custom";
+export type AspectRatioPreset = "16:9" | "9:16" | "4:3" | "1:1" | "4:5" | "custom";
 
 export interface CanvasSettings {
   aspectRatio: AspectRatioPreset;
@@ -246,6 +248,7 @@ export const useSceneStore = create<SceneState>()(
               ...src,
               id: uuidv4(),
             })),
+            activePresetId: scene.activePresetId,
           };
 
           set(
@@ -396,10 +399,87 @@ export const useSceneStore = create<SceneState>()(
         /* ────────── Canvas Settings ────────── */
 
         setAspectRatio: (ratio) => {
+          const state = get();
+          const activeScene = state.scenes.find(
+            (s) => s.id === state.activeSceneId,
+          );
+          let presetId = activeScene?.activePresetId;
+
+          // If no stored preset, try to infer from current layout (e.g. old persisted data)
+          if (!presetId && activeScene) {
+            const camera = activeScene.sources.find((s) => s.type === "camera");
+            const screen = activeScene.sources.find(
+              (s) => s.type === "screen" || s.type === "window",
+            );
+            if (camera && screen) {
+              presetId =
+                inferPresetFromLayout(
+                  { x: camera.x, y: camera.y, width: camera.width, height: camera.height },
+                  screen.width,
+                  screen.height,
+                  state.canvasSettings.aspectRatio,
+                ) ?? undefined;
+            }
+          }
+
+          const preset = presetId
+            ? getPresetForRatio(presetId, ratio)
+            : null;
+
           set(
-            (state) => ({
-              canvasSettings: { ...state.canvasSettings, aspectRatio: ratio },
-            }),
+            (s) => {
+              const next: { canvasSettings: CanvasSettings; scenes?: Scene[] } = {
+                canvasSettings: { ...s.canvasSettings, aspectRatio: ratio },
+              };
+
+              if (preset && activeScene) {
+                const cameraSource = activeScene.sources.find((s) => s.type === "camera");
+                const screenSource = activeScene.sources.find(
+                  (s) => s.type === "screen" || s.type === "window",
+                );
+
+                next.scenes = s.scenes.map((scene) => {
+                  if (scene.id !== s.activeSceneId) return scene;
+                  return {
+                    ...scene,
+                    activePresetId: presetId,
+                    sources: scene.sources.map((src) => {
+                      if (src.type === "camera" && cameraSource && src.id === cameraSource.id) {
+                        if (!preset.camera) return { ...src, visible: false };
+                        const cam = preset.camera;
+                        return {
+                          ...src,
+                          x: cam.x,
+                          y: cam.y,
+                          width: cam.width,
+                          height: cam.height,
+                          visible: true,
+                          ...({ shape: cam.shape, borderRadius: cam.borderRadius } as Partial<Source>),
+                        };
+                      }
+                      if (
+                        (src.type === "screen" || src.type === "window") &&
+                        screenSource &&
+                        src.id === screenSource.id
+                      ) {
+                        if (preset.screenWidthPercent === 0) return { ...src, visible: false };
+                        return {
+                          ...src,
+                          visible: true,
+                          x: 0,
+                          y: 0,
+                          width: preset.screenWidthPercent,
+                          height: preset.screenHeightPercent ?? 100,
+                        };
+                      }
+                      return src;
+                    }),
+                  };
+                });
+              }
+
+              return next;
+            },
             false,
             "setAspectRatio",
           );
@@ -447,7 +527,7 @@ export const useSceneStore = create<SceneState>()(
           );
           if (!activeScene) return;
 
-          const preset = getPresetById(presetId);
+          const preset = getPresetForRatio(presetId, state.canvasSettings.aspectRatio);
           if (!preset) return;
 
           const cameraSource = activeScene.sources.find(
@@ -464,6 +544,7 @@ export const useSceneStore = create<SceneState>()(
 
                 return {
                   ...scene,
+                  activePresetId: presetId,
                   sources: scene.sources.map((s) => {
                     // Camera source
                     if (s.type === "camera" && cameraSource && s.id === cameraSource.id) {
@@ -495,14 +576,13 @@ export const useSceneStore = create<SceneState>()(
                         // "Camera Only" — hide the screen
                         return { ...s, visible: false };
                       }
-                      // Restore screen visibility + optionally constrain width
                       return {
                         ...s,
                         visible: true,
                         x: 0,
                         y: 0,
                         width: preset.screenWidthPercent,
-                        height: 100,
+                        height: preset.screenHeightPercent ?? 100,
                       };
                     }
 

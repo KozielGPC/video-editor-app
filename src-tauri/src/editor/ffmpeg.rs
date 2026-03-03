@@ -430,6 +430,14 @@ pub fn build_export_filter_complex(project: &ProjectData) -> ExportGraph {
 
     let (proj_w, proj_h) = project.resolution;
 
+    // Build asset ID → path lookup from the project assets.
+    // clip.asset_id may be an asset ID or directly a path (from the frontend conversion).
+    let asset_path_map: std::collections::HashMap<String, String> = project
+        .assets
+        .iter()
+        .map(|a| (a.id.clone(), a.path.clone()))
+        .collect();
+
     // Collect zoom clips from zoom tracks (absolute timeline positions)
     let mut zoom_track_clips: Vec<&ClipData> = Vec::new();
     for track in &project.tracks {
@@ -514,10 +522,16 @@ pub fn build_export_filter_complex(project: &ProjectData) -> ExportGraph {
     let cam_sync_offset = cam_overlay.map(|c| c.sync_offset).unwrap_or(0.0);
 
     for (clip_idx, clip) in all_clips.iter().enumerate() {
-        // Register asset as FFmpeg input (deduplicate)
-        let input_idx = *asset_to_input.entry(clip.asset_id.clone()).or_insert_with(|| {
+        // Register asset as FFmpeg input (deduplicate).
+        // Resolve asset_id to a file path via the asset map; fall back to using
+        // asset_id directly as a path (legacy / frontend already resolved).
+        let asset_path = asset_path_map
+            .get(&clip.asset_id)
+            .cloned()
+            .unwrap_or_else(|| clip.asset_id.clone());
+        let input_idx = *asset_to_input.entry(asset_path.clone()).or_insert_with(|| {
             let idx = input_paths.len();
-            input_paths.push(clip.asset_id.clone());
+            input_paths.push(asset_path.clone());
             idx
         });
 
@@ -580,11 +594,12 @@ pub fn build_export_filter_complex(project: &ProjectData) -> ExportGraph {
 
         let al = format!("a{label_counter}");
 
+        let final_vl = format!("v{label_counter}");
+
         if cam_input_idx.is_some() && cam_overlay.is_some() {
             // Camera overlay mode: zoom screen only, overlay camera on top
             let sv_label = format!("sv{label_counter}");
             let cv_label = format!("cv{label_counter}");
-            let vl = format!("v{label_counter}");
 
             // Trim screen video + apply zoom
             filter_parts.push(format!(
@@ -605,17 +620,17 @@ pub fn build_export_filter_complex(project: &ProjectData) -> ExportGraph {
 
             // Overlay camera on zoomed screen
             filter_parts.push(format!(
-                "[{sv_label}][{cv_label}]overlay={cam_x}:{cam_y}:shortest=1[{vl}]"
+                "[{sv_label}][{cv_label}]overlay={cam_x}:{cam_y}:shortest=1[{final_vl}]"
             ));
 
-            concat_video_labels.push(format!("[{vl}]"));
+            concat_video_labels.push(format!("[{final_vl}]"));
         } else {
             // No camera overlay — standard pipeline
-            let vl = format!("v{label_counter}");
             filter_parts.push(format!(
-                "[{input_idx}:v]trim=start={start_sec:.3}:end={end_sec:.3},setpts=PTS-STARTPTS,{zoom_filter}[{vl}]"
+                "[{input_idx}:v]trim=start={start_sec:.3}:end={end_sec:.3},setpts=PTS-STARTPTS,{zoom_filter}[{final_vl}]"
             ));
-            concat_video_labels.push(format!("[{vl}]"));
+
+            concat_video_labels.push(format!("[{final_vl}]"));
         }
 
         // Trim audio + clean (same regardless of camera overlay)

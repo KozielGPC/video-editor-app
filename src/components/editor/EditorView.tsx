@@ -1,8 +1,9 @@
 import { useRef, useState, useEffect, useCallback } from "react";
-import { Film, FolderOpen } from "lucide-react";
+import { Film, FolderOpen, FolderInput } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useEditorStore } from "@/stores/editorStore";
 import { probeMedia } from "@/lib/ffmpeg";
+import { exists } from "@tauri-apps/plugin-fs";
 import PreviewCanvas from "./PreviewCanvas";
 import ScenePresetPicker from "./ScenePresetPicker";
 import Inspector from "./Inspector";
@@ -24,6 +25,8 @@ export default function EditorView() {
     setTool,
     createNewProject,
     applyScenePreset,
+    saveProject,
+    loadProject,
   } = useEditorStore();
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -50,7 +53,10 @@ export default function EditorView() {
           break;
 
         case "KeyS":
-          if (!meta) {
+          if (meta) {
+            e.preventDefault();
+            saveProject();
+          } else {
             e.preventDefault();
             splitClipAtPlayhead();
           }
@@ -68,6 +74,8 @@ export default function EditorView() {
           if (meta) {
             e.preventDefault();
             e.shiftKey ? redo() : undo();
+          } else {
+            setTool("zoom");
           }
           break;
 
@@ -81,8 +89,6 @@ export default function EditorView() {
         case "KeyT":
           if (!meta) setTool("text");
           break;
-        // "Z" without meta = zoom tool
-        // handled above when meta is held
       }
     };
 
@@ -97,6 +103,7 @@ export default function EditorView() {
     undo,
     redo,
     setTool,
+    saveProject,
   ]);
 
   // ── Resizable dividers ──────────────────────────────────────────────────
@@ -161,6 +168,31 @@ export default function EditorView() {
     }
   }, [createProjectFromRecording]);
 
+  // ── Open existing project folder ─────────────────────────────────────
+
+  const handleOpenProject = useCallback(async () => {
+    try {
+      const { open: openDialog } = await import("@tauri-apps/plugin-dialog");
+      const selected = await openDialog({
+        directory: true,
+        multiple: false,
+        title: "Open Project Folder",
+      });
+      if (!selected) return;
+      const dirPath = typeof selected === "string" ? selected : selected;
+      // Check for project.autoeditor inside the folder
+      const projectFile = `${dirPath}/project.autoeditor`;
+      const fileExists = await exists(projectFile);
+      if (!fileExists) {
+        console.error("No project.autoeditor found in", dirPath);
+        return;
+      }
+      await loadProject(dirPath);
+    } catch (err) {
+      console.error("Failed to open project:", err);
+    }
+  }, [loadProject]);
+
   // ── No-project state ────────────────────────────────────────────────────
 
   if (!project) {
@@ -192,6 +224,15 @@ export default function EditorView() {
             <FolderOpen size={16} />
             Open Video File
           </button>
+          <button
+            onClick={handleOpenProject}
+            className="flex items-center gap-2 px-5 py-2 bg-neutral-800 hover:bg-neutral-700 text-neutral-200
+              rounded-lg text-sm border border-neutral-700 transition-colors
+              focus:outline-none focus:ring-2 focus:ring-neutral-500/50"
+          >
+            <FolderInput size={16} />
+            Open Project
+          </button>
         </div>
       </div>
     );
@@ -215,7 +256,7 @@ export default function EditorView() {
             <PreviewCanvas />
           </div>
           {project.cameraOverlay && (
-            <div className="flex-none border-t border-neutral-800 bg-neutral-900/50">
+            <div className="flex-none flex items-center gap-2 px-3 py-1.5 border-t border-neutral-800 bg-neutral-900/50">
               <ScenePresetPicker onSelect={applyScenePreset} />
             </div>
           )}

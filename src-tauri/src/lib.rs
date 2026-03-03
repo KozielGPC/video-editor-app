@@ -65,6 +65,7 @@ pub fn run() {
                     return Response::builder()
                         .status(404)
                         .header("Content-Type", "text/plain")
+                        .header("Access-Control-Allow-Origin", "*")
                         .body(format!("File not found: {path}").into_bytes())
                         .unwrap();
                 }
@@ -104,6 +105,7 @@ pub fn run() {
                         format!("bytes {start}-{end}/{total_size}"),
                     )
                     .header("Accept-Ranges", "bytes")
+                    .header("Access-Control-Allow-Origin", "*")
                     .body(buf)
                     .unwrap()
             } else {
@@ -114,6 +116,7 @@ pub fn run() {
                     .header("Content-Type", mime)
                     .header("Content-Length", total_size.to_string())
                     .header("Accept-Ranges", "bytes")
+                    .header("Access-Control-Allow-Origin", "*")
                     .body(buf)
                     .unwrap()
             }

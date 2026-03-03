@@ -33,8 +33,10 @@ function SceneTab({
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState(scene.name);
   const [showMenu, setShowMenu] = useState(false);
+  const [menuPos, setMenuPos] = useState({ left: 0, top: 0 });
   const inputRef = useRef<HTMLInputElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const tabRef = useRef<HTMLDivElement>(null);
 
   // Focus input when entering edit mode
   useEffect(() => {
@@ -86,15 +88,27 @@ function SceneTab({
     [handleSaveEdit, handleCancelEdit]
   );
 
-  const handleContextMenu = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
+  const openMenu = useCallback(() => {
+    if (tabRef.current) {
+      const rect = tabRef.current.getBoundingClientRect();
+      setMenuPos({ left: rect.left, top: rect.bottom + 4 });
+    }
     setShowMenu(true);
   }, []);
 
+  const handleContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    openMenu();
+  }, [openMenu]);
+
   const handleMenuClick = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
-    setShowMenu((prev) => !prev);
-  }, []);
+    if (showMenu) {
+      setShowMenu(false);
+    } else {
+      openMenu();
+    }
+  }, [showMenu, openMenu]);
 
   const handleDuplicate = useCallback(() => {
     onDuplicate();
@@ -107,7 +121,7 @@ function SceneTab({
   }, [onDelete]);
 
   return (
-    <div className="relative group">
+    <div ref={tabRef} className="relative group">
       <div
         onClick={onActivate}
         onContextMenu={handleContextMenu}
@@ -167,11 +181,12 @@ function SceneTab({
         )}
       </div>
 
-      {/* Context menu */}
+      {/* Context menu — fixed to avoid clipping by overflow parents */}
       {showMenu && (
         <div
           ref={menuRef}
-          className="absolute top-full left-0 mt-1 min-w-[140px] py-1 bg-neutral-900 border border-neutral-700 rounded-lg shadow-xl z-50"
+          className="fixed min-w-[140px] py-1 bg-neutral-900 border border-neutral-700 rounded-lg shadow-xl z-50"
+          style={{ left: menuPos.left, top: menuPos.top }}
           onClick={(e) => e.stopPropagation()}
         >
           <button

@@ -135,6 +135,8 @@ interface RecorderState {
   lastCameraLayout: CameraLayoutForMerge | null;
   /** Sync offset between screen and camera start (seconds) */
   lastSyncOffset: number;
+  /** Project directory for organized folder output */
+  lastProjectDir: string | null;
   /** Dismiss the post-recording banner */
   clearLastRecording: () => void;
 
@@ -149,6 +151,8 @@ interface RecorderState {
   /** Timestamps for camera sync */
   _screenStartTime: number | null;
   _cameraStartTime: number | null;
+  /** Project directory tracked during recording */
+  _projectDir: string | null;
 
   startRecording: () => Promise<void>;
   pauseRecording: () => Promise<void>;
@@ -203,12 +207,14 @@ export const useRecorderStore = create<RecorderState>()(
       lastCameraPath: null,
       lastCameraLayout: null,
       lastSyncOffset: 0,
+      lastProjectDir: null,
       zoomOverlay: null,
       _cameraLayout: null,
       _screenStartTime: null,
       _cameraStartTime: null,
+      _projectDir: null,
       clearLastRecording: () =>
-        set({ lastRecordingPath: null, lastScreenOnlyPath: null, lastCameraPath: null, lastCameraLayout: null, lastSyncOffset: 0 }, false, "clearLastRecording"),
+        set({ lastRecordingPath: null, lastScreenOnlyPath: null, lastCameraPath: null, lastCameraLayout: null, lastSyncOffset: 0, lastProjectDir: null }, false, "clearLastRecording"),
       setZoomOverlay: (zoomOverlay) =>
         set({ zoomOverlay }, false, "setZoomOverlay"),
 
@@ -254,7 +260,7 @@ export const useRecorderStore = create<RecorderState>()(
           const screenStartTime = Date.now();
 
           // Start screen + mic recording via FFmpeg (no camera)
-          await invoke("start_recording", {
+          const result = await invoke<{ screen_path: string; project_dir: string }>("start_recording", {
             screenId: selectedScreenId,
             micId: selectedMicId,
           });
@@ -279,6 +285,7 @@ export const useRecorderStore = create<RecorderState>()(
               _cameraLayout: cameraLayout,
               _screenStartTime: screenStartTime,
               _cameraStartTime: cameraStartTime,
+              _projectDir: result.project_dir,
             },
             false,
             "startRecording",
@@ -329,7 +336,7 @@ export const useRecorderStore = create<RecorderState>()(
         let outputPath: string | null = null;
         let savedCameraPath: string | null = null;
         let savedSyncOffset = 0;
-        const { _screenStartTime, _cameraStartTime, selectedCameraId } = get();
+        const { _screenStartTime, _cameraStartTime, selectedCameraId, _projectDir } = get();
 
         // Re-read camera layout from scene store at stop time so preset
         // changes made during recording are picked up.
@@ -378,7 +385,10 @@ export const useRecorderStore = create<RecorderState>()(
         if (outputPath && cameraBlob && cameraLayout) {
           try {
             const ext = cameraFileExtension();
-            const cameraPath = `${outputPath}.camera${ext}`;
+            // Save into project dir media/ folder if available
+            const cameraPath = _projectDir
+              ? `${_projectDir}/media/camera${ext}`
+              : `${outputPath}.camera${ext}`;
             const bytes = new Uint8Array(await cameraBlob.arrayBuffer());
             await writeFile(cameraPath, bytes);
             savedCameraPath = cameraPath;
@@ -405,10 +415,12 @@ export const useRecorderStore = create<RecorderState>()(
             lastCameraPath: savedCameraPath,
             lastCameraLayout: savedCameraPath ? cameraLayout : null,
             lastSyncOffset: savedSyncOffset,
+            lastProjectDir: _projectDir,
             zoomOverlay: null,
             _cameraLayout: null,
             _screenStartTime: null,
             _cameraStartTime: null,
+            _projectDir: null,
           },
           false,
           "stopRecording",
@@ -427,6 +439,7 @@ export const useRecorderStore = create<RecorderState>()(
             _cameraLayout: null,
             _screenStartTime: null,
             _cameraStartTime: null,
+            _projectDir: null,
           },
           false,
           "resetState",

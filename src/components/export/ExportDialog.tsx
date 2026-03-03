@@ -195,14 +195,25 @@ interface RustCameraOverlayData {
   crop_height?: number;
 }
 
+interface RustAssetData {
+  id: string;
+  name: string;
+  path: string;
+  asset_type: string;
+  duration_ms: number;
+  width: number;
+  height: number;
+}
+
 interface RustProjectData {
   id: string;
   name: string;
   resolution: [number, number];
   frame_rate: number;
   tracks: RustTrackData[];
-  assets: string[];
+  assets: RustAssetData[];
   camera_overlay?: RustCameraOverlayData;
+  version: number;
 }
 
 function convertProjectToRust(project: Project): RustProjectData {
@@ -265,8 +276,17 @@ function convertProjectToRust(project: Project): RustProjectData {
     resolution: [project.resolution.width, project.resolution.height],
     frame_rate: project.frameRate,
     tracks: project.tracks.map(convertTrack),
-    assets: project.assets.map((a) => a.path),
+    assets: project.assets.map((a) => ({
+      id: a.id,
+      name: a.name,
+      path: a.path,
+      asset_type: a.type,
+      duration_ms: Math.round(a.duration * 1000),
+      width: a.width ?? 0,
+      height: a.height ?? 0,
+    })),
     camera_overlay: cameraOverlay,
+    version: 1,
   };
 }
 

@@ -27,13 +27,28 @@ pub fn list_microphones() -> Result<Vec<MicrophoneInfo>, String> {
 // Recording lifecycle
 // ---------------------------------------------------------------------------
 
-/// Generate a timestamped output path in ~/Movies/AutoEditor/
-fn generate_output_path() -> Result<String, String> {
+/// Result of generating the output path: project folder + screen file.
+struct OutputPaths {
+    /// The project directory, e.g. `~/Movies/AutoEditor/Recording_20260303_141500/`
+    project_dir: String,
+    /// The screen recording file, e.g. `.../media/screen.mp4`
+    screen_path: String,
+}
+
+/// Generate a timestamped project folder in ~/Movies/AutoEditor/
+fn generate_output_path() -> Result<OutputPaths, String> {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    let dir = format!("{home}/Movies/AutoEditor");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("Cannot create output dir: {e}"))?;
+    let base_dir = format!("{home}/Movies/AutoEditor");
     let ts = chrono::Local::now().format("%Y%m%d_%H%M%S");
-    Ok(format!("{dir}/recording_{ts}.mp4"))
+    let project_dir = format!("{base_dir}/Recording_{ts}");
+    let media_dir = format!("{project_dir}/media");
+    std::fs::create_dir_all(&media_dir)
+        .map_err(|e| format!("Cannot create output dir: {e}"))?;
+    let screen_path = format!("{media_dir}/screen.mp4");
+    Ok(OutputPaths {
+        project_dir,
+        screen_path,
+    })
 }
 
 /// Camera layout for overlay positioning (percentages 0-100)
@@ -128,14 +143,23 @@ fn resolve_camera_index(camera_id: &str) -> String {
     camera_id.to_string()
 }
 
+/// Return value from start_recording so the frontend knows both paths.
+#[derive(serde::Serialize)]
+pub struct StartRecordingResult {
+    /// The screen recording file path (media/screen.mp4)
+    pub screen_path: String,
+    /// The project directory (Recording_YYYYMMDD_HHMMSS/)
+    pub project_dir: String,
+}
+
 /// Start recording. Screen + mic only; camera is recorded by the browser and merged later.
 #[tauri::command]
 pub fn start_recording(
     screen_id: Option<String>,
     mic_id: Option<String>,
     state: tauri::State<'_, Mutex<RecordingManager>>,
-) -> Result<String, String> {
-    let output_path = generate_output_path()?;
+) -> Result<StartRecordingResult, String> {
+    let paths = generate_output_path()?;
 
     // Resolve the screen ID to an FFmpeg avfoundation device index
     let resolved_screen_id = screen_id.as_ref().map(|id| resolve_screen_index(id));
@@ -159,7 +183,7 @@ pub fn start_recording(
         screen_id: resolved_screen_id,
         camera_id: None,
         mic_id,
-        output_path,
+        output_path: paths.screen_path.clone(),
         screen_width: sw,
         screen_height: sh,
         screen_origin_x: sox,
@@ -168,7 +192,13 @@ pub fn start_recording(
     };
 
     let mut manager = state.lock().map_err(|e| e.to_string())?;
-    manager.start_recording(&config)
+    manager.project_dir = Some(paths.project_dir.clone());
+    manager.start_recording(&config)?;
+
+    Ok(StartRecordingResult {
+        screen_path: paths.screen_path,
+        project_dir: paths.project_dir,
+    })
 }
 
 /// Merge screen recording with a camera recording captured by the browser.
@@ -272,9 +302,27 @@ struct LegacyZoomMarker {
 
 /// Read zoom markers from the sidecar file next to a recording.
 /// Supports both new (start_ms/end_ms) and legacy (timestamp_ms/duration_ms) formats.
+/// Also checks the project directory layout (project_dir/zoom.json).
 #[tauri::command]
 pub fn read_zoom_markers(recording_path: String) -> Result<Vec<ZoomMarker>, String> {
-    let zoom_path = format!("{recording_path}.zoom.json");
+    // Try project-dir layout first: look for zoom.json in parent's parent
+    // e.g. Recording_xxx/media/screen.mp4 -> Recording_xxx/zoom.json
+    let project_dir_path = std::path::Path::new(&recording_path)
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|p| p.join("zoom.json"));
+    let legacy_path = format!("{recording_path}.zoom.json");
+
+    let zoom_path = if let Some(ref pd) = project_dir_path {
+        if pd.exists() {
+            pd.to_string_lossy().to_string()
+        } else {
+            legacy_path
+        }
+    } else {
+        legacy_path
+    };
+
     let json = match std::fs::read_to_string(&zoom_path) {
         Ok(s) => s,
         Err(_) => return Ok(vec![]),

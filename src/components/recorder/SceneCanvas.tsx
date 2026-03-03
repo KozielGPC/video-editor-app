@@ -12,19 +12,19 @@ import {
   Trash2,
   Copy,
 } from "lucide-react";
-import { useSceneStore, type Source, type AspectRatioPreset } from "@/stores/sceneStore";
+import { useSceneStore, type Source } from "@/stores/sceneStore";
 import { useActiveScene } from "@/hooks/useActiveScene";
 import { useSourceActions } from "@/hooks/useSourceActions";
 import { useCaptureStream } from "@/hooks/useCaptureStream";
 import SourceOverlay from "./SourceOverlay";
-import ScenePresetPicker from "@/components/editor/ScenePresetPicker";
 
 // Aspect ratio dimensions for display
-const ASPECT_RATIOS: Record<AspectRatioPreset, { w: number; h: number } | null> = {
+const ASPECT_RATIOS: Record<string, { w: number; h: number } | null> = {
   "16:9": { w: 16, h: 9 },
   "9:16": { w: 9, h: 16 },
   "4:3": { w: 4, h: 3 },
   "1:1": { w: 1, h: 1 },
+  "4:5": { w: 4, h: 5 },
   custom: null,
 };
 
@@ -44,7 +44,6 @@ function SceneCanvas() {
   const { sources, selectedSource, hasActiveScene } = useActiveScene();
   const selectedSourceId = useSceneStore((state) => state.selectedSourceId);
   const canvasSettings = useSceneStore((state) => state.canvasSettings);
-  const setAspectRatio = useSceneStore((state) => state.setAspectRatio);
 
   // Capture streaming for live preview
   const { frames, streams, status } = useCaptureStream(sources);
@@ -61,10 +60,6 @@ function SceneCanvas() {
     toggleVisibility,
     toggleLock,
   } = useSourceActions();
-
-  // Scene preset support
-  const applyScenePreset = useSceneStore((state) => state.applyScenePreset);
-  const hasCamera = sources.some((s) => s.type === "camera");
 
   // Sort sources by z-index for rendering
   const sortedSources = [...sources].sort((a, b) => a.zIndex - b.zIndex);
@@ -229,30 +224,6 @@ function SceneCanvas() {
 
   return (
     <div className="relative flex flex-col h-full">
-      {/* Toolbar — scene presets (left) + aspect ratio (right) */}
-      <div className="flex items-center justify-between gap-2 pb-2 mb-2 border-b border-neutral-800">
-        {hasCamera ? (
-          <ScenePresetPicker onSelect={applyScenePreset} />
-        ) : (
-          <div />
-        )}
-
-        {/* Aspect ratio selector */}
-        <div className="flex items-center gap-1.5 shrink-0">
-          <span className="text-xs text-neutral-500">Ratio:</span>
-          <select
-            value={canvasSettings.aspectRatio}
-            onChange={(e) => setAspectRatio(e.target.value as AspectRatioPreset)}
-            className="px-2 py-1 text-xs bg-neutral-800 border border-neutral-700 rounded-lg text-neutral-300 focus:outline-none focus:border-blue-500"
-          >
-            <option value="16:9">16:9</option>
-            <option value="9:16">9:16 (Vertical)</option>
-            <option value="4:3">4:3</option>
-            <option value="1:1">1:1 (Square)</option>
-          </select>
-        </div>
-      </div>
-
       {/* Canvas container */}
       <div
         ref={containerRef}
